@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+{% load static %}
+{% block content %}
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teen Patti Profile</title>
+    <link rel="stylesheet" type="text/css" href="{% static 'css/profile.css' %}">
+</head>
+<body>
+    <div class="profile-container">
+        <div class="profile-info">
+            {%if user.is_authenticated %}
+            <h2 class="username">{{user.username}}</h2>
+            <div class="avatar">
+                <img src="{{user.avatar.url}}" alt="Profile">
+            </div>
+            <div class="level-badge">Level 1</div>
+            <div class="badges">
+                <button class="badge gold">Gold</button>
+                <button class="badge diamond">Diamond</button>
+            </div>
+            <div class="coins">&#128176; 1,000,000</div>
+            {%endif%}
+        </div>
+        <div class="game-modes">
+            <div class="game-card">
+                <img src="teen-patti.jpg" alt="Teen Patti">
+                <div class="game-title">Teen Patti</div>
+            </div>
+            <div class="game-card">
+                <img src="variation.jpg" alt="Variation">
+                <div class="game-title">Variation</div>
+            </div>
+        </div>
+    </div>
+    <div class="bottom-bar">
+        <div class="bottom-info">
+            <span class="coins">&#128176; 1,000,000</span>
+            <span class="diamonds">&#128142; 150</span>
+        </div>
+        <div class="bottom-buttons">
+            <button class="shop">&#128717;</button>
+            <button class="settings">&#9881;</button>
+        </div>
+    </div>
+</body>
+</html>
+{% endblock content %}

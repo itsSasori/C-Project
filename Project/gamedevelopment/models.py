@@ -1,4 +1,3 @@
-# Create your models here.
 from datetime import timedelta
 from django.db import models
 from django.db import models
@@ -6,7 +5,7 @@ from django.utils.timezone import now
 from django.core.validators import MinValueValidator
 from django.conf import settings
 
-
+# Create your models here.
 
 class GameTable(models.Model):
     name = models.CharField(max_length=255)
@@ -14,6 +13,24 @@ class GameTable(models.Model):
     table_limit = models.PositiveIntegerField(default=120000)  # As seen in the image
     current_pot = models.PositiveIntegerField(default=0)  # Total coins bet in the game
     created_at = models.DateTimeField(auto_now_add=True)
+    is_private = models.BooleanField(default=False)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE)
+    is_active = models.BooleanField(default=True)
+    current_turn = models.IntegerField(default=0)  # The player ID whose turn it is
+    round_status = models.CharField(max_length=50, choices=[('betting', 'Betting'), ('waiting', 'Waiting'), ('showdown', 'Showdown')])
+    round_number = models.IntegerField(default=1)
+    
+    def __str__(self):
+        return self.name
+
+
+class Card(models.Model):
+    rank = models.CharField(max_length=10)
+    suit = models.CharField(max_length=10)
+
+    def __str__(self):
+        return f"{self.rank} of {self.suit}"
+
 
 class Player(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -21,12 +38,21 @@ class Player(models.Model):
     is_blind = models.BooleanField(default=True)
     is_packed = models.BooleanField(default=False)  # If the player has folded
     current_bet = models.PositiveIntegerField(default=0)  # Coins they have bet
-    hand = models.JSONField(default=list)  # Stores card values
+    hand_cards = models.JSONField(default=list)  # Stores card values
+    is_ready = models.BooleanField(default=False)
+    is_turn = models.BooleanField(default=False)
+
+    def __str__(self):
+        return self.user.username
+    
+    def is_packed(self):
+        return self.is_packed == False
+
 
 class Bet(models.Model):
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="bets")
     amount = models.PositiveIntegerField()
-    action = models.CharField(max_length=50, choices=[('chaal', 'Chaal'), ('pack', 'Pack'), ('sideshow', 'Sideshow')])
+    bet_action = models.CharField(max_length=50, choices=[('blind', 'Blind'),('chaal', 'Chaal'), ('pack', 'Pack'), ('sideshow', 'Sideshow')])
     timestamp = models.DateTimeField(auto_now_add=True)
 
 class Transaction(models.Model):
@@ -89,6 +115,18 @@ class Redemption(models.Model):
 
     def __str__(self):
         return f"Redemption {self.id} - {self.user.username}"
+    
+
+class GameHistory(models.Model):
+    game = models.ForeignKey(GameTable, on_delete=models.CASCADE)
+    player = models.ForeignKey(Player, on_delete=models.CASCADE)
+    action = models.CharField(max_length=50)  # e.g., "bet", "fold", "call"
+    amount = models.PositiveIntegerField(null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"GameHistory {self.id} - {self.player.user.username}"
+
 
 # class PremiumTable(models.Model):
 #     """Represents a premium Teen Patti table with exclusive features."""

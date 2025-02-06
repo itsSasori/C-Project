@@ -1,8 +1,16 @@
-from django.shortcuts import render
 from django.shortcuts import redirect, render
 from .forms import SignupForm,UserForm
 from django.contrib.auth import logout
 from django.contrib.auth import get_user_model
+from django.contrib.auth import login, authenticate, logout
+from django.shortcuts import get_object_or_404
+from django.db.models import F
+from django.http import JsonResponse
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+
+
 
 User = get_user_model()  # This ensures you're using the correct Custom User model
 
@@ -13,7 +21,8 @@ def register(request):
         form = SignupForm(request.POST)
         if form.is_valid():
             # save the user to db and redirect to home page
-            form.save()
+            user = form.save()
+            login(request,user)
             return redirect('interface')
     else:
         form = SignupForm()

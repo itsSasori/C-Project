@@ -32,23 +32,26 @@
         
         <!-- Main Menu Buttons -->
         <div class="grid grid-cols-2 gap-4 px-4 mt-8">
-            <a href="">
-            <button class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+            <a href="{% url 'game_table' game_room_id=game_room_id %}" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+                <span data-lucide="users" class="w-8 h-8"></span>
+                <span class="text-sm font-medium text-center">PLAY GAME</span>
+            </a>
+            <a href="" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="users" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">JOIN PRIVATE TABLE</span>
-            </button></a>
-            <button class="relative group bg-red-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+            </a>
+            <a href="" class="relative group bg-red-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="users" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">CREATE PRIVATE TABLE</span>
-            </button>
-            <button class="relative group bg-green-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+            </a>
+            <a href="" class="relative group bg-green-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="trophy" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">PLAY VARIATION</span>
-            </button>
-            <button class="relative group bg-yellow-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+            </a>
+            <a href="" class="relative group bg-yellow-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="star" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">PREMIUM TABLE</span>
-            </button>
+            </a>
         </div>
         
         <!-- Bottom Navigation -->
@@ -61,16 +64,13 @@
                 <button class="flex flex-col items-center gap-1" data-lucide="star"></button>
                 <ul>
                     <li class="relative">
-                        <button id="settings-btn" class="flex flex-col items-center gap-1" data-lucide="settings">
-                            <!-- Settings Button -->
-                        </button>
-                        <!-- Edit Profile Dropdown -->
+                        <button id="settings-btn" class="flex flex-col items-center gap-1" data-lucide="settings"></button>
                         <ul id="settings-menu" class="absolute left-0 w-full bg-[#2a2a3e] text-white hidden bottom-full mb-2">
                             {% if user.is_authenticated %}
-                                <li><a href="{%url 'edit-profile'%}" class="btn btn--main btn--pill">Edit Profile</a></li>
-                                <li><a href="{%url 'logout'%}" class="btn btn--main btn--pill">Logout</a></li>
-                            {%else%}
-                                <li><a href="{%url 'login'%}" class="btn btn--main btn--pill">Login</a></li>
+                                <li><a href="{% url 'edit-profile' %}" class="btn btn--main btn--pill">Edit Profile</a></li>
+                                <li><a href="{% url 'logout' %}" class="btn btn--main btn--pill">Logout</a></li>
+                            {% else %}
+                                <li><a href="{% url 'login' %}" class="btn btn--main btn--pill">Login</a></li>
                             {% endif %}
                         </ul>
                     </li>
@@ -81,12 +81,10 @@
 
     <script>
         lucide.createIcons();
-        <!-- JavaScript to toggle the visibility of the menu -->
-
-    document.getElementById('settings-btn').addEventListener('click', function() {
-        const menu = document.getElementById('settings-menu');
-        menu.classList.toggle('hidden');  // Toggles the visibility of the menu
-    });
+        document.getElementById('settings-btn').addEventListener('click', function() {
+            const menu = document.getElementById('settings-menu');
+            menu.classList.toggle('hidden');
+        });
     </script>
 </body>
 </html>

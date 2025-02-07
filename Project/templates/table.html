@@ -8,6 +8,9 @@
 </head>
 <body>
     <div class="container">
+        <button class="exit-game-btn" id="exit-game-btn">Exit Game</button>
+       
+        
         <div class="poker-table">
             <!-- Top Icons -->
             <div class="top-icons">
@@ -68,73 +71,112 @@
             </div>
         </div>
     </div>
+
+    
+
 </body>
-
-
 </html>
-
-
 <script>
-    const gameRoomId = {{ game_room_id }}    // Set the correct game room ID
-    console.log('Game Room ID:', {{ game_room_id }});  // Check if the value is correct in the console
+   console.log("Loading Javascript");
+    let gameRoomId = "{{ game_room_id }}";  // Ensure this value is correctly rendered from the context
+    console.log("Game Room ID:", gameRoomId);
 
-    const socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameRoomId}/`);
-    
-    socket.onopen = function(e) {
-        console.log("Connected to game room");
-    };
-    
-    socket.onmessage = function(e) {
-        const data = JSON.parse(e.data);
-        console.log("Received game data:", data);
-        updateGameUI(data);
-    };
-    
-    socket.onclose = function(e) {
-        console.log("Disconnected from game room");
-    };
-    
-    function placeBet(amount) {
-        const data = {
-            action: 'place_bet',
-            player_id: 1,  // Player ID
-            amount: amount
-        };
-        socket.send(JSON.stringify(data));
+const socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameRoomId}/`);
+
+socket.onopen = function(e) {
+    console.log("Connected to game room");
+};
+
+socket.onmessage = function(e) {
+    const data = JSON.parse(e.data);
+    console.log("Received game data:", data);
+    updateGameUI(data);
+    if (data.players) {
+        updatePlayersList(data.players);
     }
-    
-    function packGame() {
-        const data = {
-            action: 'pack',
-            player_id: {{ user.id }}
-            // Player ID
-        };
-        socket.send(JSON.stringify(data));
-        document.getElementById("pack-btn").disabled = true;
+    if (data.type === "player_disconnected") {
+        // Handle player leaving scenario
+        console.log(`Player ${data.player_id} has disconnected.`);
+        removePlayerFromUI(data.player_id);
     }
-    
-    function requestSideshow() {
-        const data = {
-            action: 'sideshow',
-            player_id: {{ user.id }}  // Player ID
-        };
-        socket.send(JSON.stringify(data));
+};
+
+function removePlayerFromUI(playerId) {
+    const playerElement = document.getElementById(`player-${playerId}`);
+    if (playerElement) {
+        playerElement.remove();
+        console.log(`Player ${playerId} removed from UI`);
     }
+}
+
+function updatePlayersList(players) {
+    const playerList = document.getElementById("player-list");
+    playerList.innerHTML = "";
+
+    players.forEach(player => {
+        const li = document.createElement("li");
+        li.textContent = `${player.username} (${player.status})`;
+        playerList.appendChild(li);
+    });
+}
+
+socket.onclose = function(e) {
+    console.log("Disconnected from game room");
+};
+
+function updateGameUI(data) {
+    document.getElementById("table-pot").textContent = data.pot;
+    document.getElementById("current-bet").textContent = `♦ ${data.current_bet}`;
     
-    function updateGameUI(data) {
-        document.getElementById("table-pot").textContent = data.pot;
-        document.getElementById("current-bet").textContent = `♦ ${data.current_bet}`;
-        
-        if (data.players) {
-            data.players.forEach(player => {
-                const playerElement = document.querySelector(`#player-${player.id} .player-score`);
-                if (playerElement) {
-                    playerElement.textContent = player.status;
-                }
-            });
-        }
+    if (data.players) {
+        data.players.forEach(player => {
+            const playerElement = document.querySelector(`#player-${player.id} .player-score`);
+            if (playerElement) {
+                playerElement.textContent = player.status;
+            }
+        });
     }
-    
-    document.getElementById("pack-btn").addEventListener("click", packGame);
-    document.getElementById("sideshow-btn").addEventListener("click", requestSideshow);
+}
+
+
+const exitButton = document.getElementById("exit-game-btn");
+
+exitButton.addEventListener("click", function() {
+    // Redirect to the interface page
+    window.location.href = "/gamedevelopment/interface/";
+
+});
+
+
+
+// function placeBet(amount) {
+//     const data = {
+//         action: 'place_bet',
+//         player_id: 1,  // Player ID
+//         amount: amount
+//     };
+//     socket.send(JSON.stringify(data));
+// }
+
+// function packGame() {
+//     const data = {
+//         action: 'pack',
+//         player_id: {{ user.id }}
+//         // Player ID
+//     };
+//     socket.send(JSON.stringify(data));
+//     document.getElementById("pack-btn").disabled = true;
+// }
+
+// function requestSideshow() {
+//     const data = {
+//         action: 'sideshow',
+//         player_id: {{ user.id }}  // Player ID
+//     };
+//     socket.send(JSON.stringify(data));
+// }
+
+// document.getElementById("pack-btn").addEventListener("click", packGame);
+// document.getElementById("sideshow-btn").addEventListener("click", requestSideshow); 
+
 </script>

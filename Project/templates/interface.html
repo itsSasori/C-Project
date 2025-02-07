@@ -36,7 +36,7 @@
                 <span data-lucide="users" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">PLAY GAME</span>
             </a>
-            <a href="" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+            {% comment %} <a href="" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="users" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">JOIN PRIVATE TABLE</span>
             </a>
@@ -51,7 +51,7 @@
             <a href="" class="relative group bg-yellow-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="star" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">PREMIUM TABLE</span>
-            </a>
+            </a> {% endcomment %}
         </div>
         
         <!-- Bottom Navigation -->
@@ -78,13 +78,14 @@
             </div>
         </div>
     </div>
-
-    <script>
-        lucide.createIcons();
-        document.getElementById('settings-btn').addEventListener('click', function() {
-            const menu = document.getElementById('settings-menu');
-            menu.classList.toggle('hidden');
-        });
-    </script>
 </body>
 </html>
+<script>
+    lucide.createIcons();
+    document.getElementById('settings-btn').addEventListener('click', function() {
+        const menu = document.getElementById('settings-menu');
+        menu.classList.toggle('hidden');
+    });
+
+        
+</script>

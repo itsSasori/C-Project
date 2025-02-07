@@ -1,5 +1,5 @@
 body {
-    background-color: black;
+    background-color: grey;
     color: white;
     font-family: Arial, sans-serif;
     display: flex;
@@ -152,3 +152,25 @@ body {
 .control-button.purple {
     background: purple;
 }
+
+
+
+/* Positioning the Exit Button on the left corner */
+.exit-game-btn {
+    position: fixed;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 10px 20px;
+    background-color: #ff4c4c;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.exit-game-btn:hover {
+    background-color: #ff2a2a;
+}
+

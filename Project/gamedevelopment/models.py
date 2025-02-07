@@ -9,27 +9,26 @@ from django.conf import settings
 
 class GameTable(models.Model):
     name = models.CharField(max_length=255)
-    max_players = models.IntegerField(default=5)
+    max_players = models.IntegerField(default=2)
     table_limit = models.PositiveIntegerField(default=120000)  # As seen in the image
     current_pot = models.PositiveIntegerField(default=0)  # Total coins bet in the game
     created_at = models.DateTimeField(auto_now_add=True)
     is_private = models.BooleanField(default=False)
-    created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL, null=True, blank=True, related_name='created_games')
     is_active = models.BooleanField(default=True)
     current_turn = models.IntegerField(default=0)  # The player ID whose turn it is
     round_status = models.CharField(max_length=50, choices=[('betting', 'Betting'), ('waiting', 'Waiting'), ('showdown', 'Showdown')])
     round_number = models.IntegerField(default=1)
+
+    def __str__(self):
+        return f'{self.name}Game-Table -{self.id}'
     
-    def __str__(self):
-        return self.name
+    def delete(self, *args, **kwargs):
+        if GameTable.objects.count() <= 1:
+            # Instead of preventing deletion, create a new game table first
+            GameTable.objects.create(created_by=None)
+        super().delete(*args, **kwargs)
 
-
-class Card(models.Model):
-    rank = models.CharField(max_length=10)
-    suit = models.CharField(max_length=10)
-
-    def __str__(self):
-        return f"{self.rank} of {self.suit}"
 
 
 class Player(models.Model):
@@ -43,11 +42,19 @@ class Player(models.Model):
     is_turn = models.BooleanField(default=False)
 
     def __str__(self):
-        return self.user.username
+        return f"{self.user.username}-Game-Table-{self.table.id}"
     
     def is_packed(self):
         return self.is_packed == False
 
+
+class Card(models.Model):
+    rank = models.CharField(max_length=10)
+    suit = models.CharField(max_length=10)
+
+    def __str__(self):
+        return f"{self.rank} of {self.suit}"
+    
 
 class Bet(models.Model):
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="bets")

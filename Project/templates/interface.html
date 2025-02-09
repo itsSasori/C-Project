@@ -11,23 +11,24 @@
     <div class="w-full max-w-md">
         <!-- Top Header -->
         <div class="flex justify-between items-center p-4">
+        </div>{% if user.is_authenticated%}
             <div class="flex items-center gap-2">
                 <div class="w-10 h-10 rounded-full bg-gradient-to-br from-yellow-500 to-yellow-600 flex items-center justify-center">
-                    <img src="placeholder.svg" alt="Player" class="w-8 h-8 rounded-full">
-                </div>{% if user.is_authenticated%}
+                    <img src="" alt="Player" class="w-8 h-8 rounded-full">
                 <span class="text-sm font-medium">{{user.username}}</span>
-                {%endif%}
             </div>
             <div class="flex items-center gap-2 bg-gradient-to-r from-green-500 to-green-600 px-4 py-1 rounded-full">
-                <img src="placeholder.svg" alt="Coins" class="w-5 h-5">
-                <span class="font-bold">1000</span>
+                <img src="" alt="Coins" class="w-5 h-5">
+                <span class="font-bold">{{user.coins}}</span>
             </div>
+            {%endif%}
+
         </div>
         
         <!-- Logo -->
         <div class="flex justify-center my-4 relative">
             <h1 class="text-3xl font-bold text-yellow-500">TEEN PATTI</h1>
-            <img src="placeholder.svg" alt="Crown" class="absolute -top-3 -right-6 w-6 h-6">
+            <img src="" alt="Crown" class="absolute -top-3 -right-6 w-6 h-6">
         </div>
         
         <!-- Main Menu Buttons -->

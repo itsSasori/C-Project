@@ -52,27 +52,35 @@ body {
     display: flex;
     align-items: center;
     position: absolute;
-}
-.top-left {
-    top: 0;
-    left: 0;
+    top: 10%;  /* Default, this will be overridden in JS */
+    left: 10%; /* Default, this will be overridden in JS */
     transform: translate(-50%, -50%);
 }
-.top-right {
-    top: 0;
-    right: 0;
+
+.player.top-left {
+    top: 10%;
+    left: 5%;
+    transform: translate(-50%, -50%);
+}
+
+.player.top-right {
+    top: 10%;
+    right: 5%;
     transform: translate(50%, -50%);
 }
-.bottom-left {
-    bottom: 0;
-    left: 0;
+
+.player.bottom-left {
+    bottom: 10%;
+    left: 5%;
     transform: translate(-50%, 50%);
 }
-.bottom-right {
-    bottom: 0;
-    right: 0;
+
+.player.bottom-right {
+    bottom: 10%;
+    right: 5%;
     transform: translate(50%, 50%);
 }
+
 .player-img {
     width: 40px;
     height: 40px;
@@ -83,7 +91,12 @@ body {
     font-size: 14px;
     margin-bottom: 5px;
 }
-.player-score {
+.player-info {
+    color: white;
+    font-size: 14px;
+}
+
+.player-coins {
     color: red;
     font-size: 12px;
 }

@@ -1,5 +1,5 @@
 {% load static %}
-
+{%block content%}
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,8 +8,8 @@
 </head>
 <body>
     <div class="container">
-        <button class="exit-game-btn" id="exit-game-btn">Exit Game</button>
-       
+        {% comment %} <button class="exit-game-btn" id="exit-game-btn">Exit Game</button>
+        {% endcomment %}
         
         <div class="poker-table">
             <!-- Top Icons -->
@@ -21,40 +21,23 @@
             <!-- Poker Table -->
             <div class="table">
                 <!-- Players -->
-                <div class="player top-left" id="player-1">
-                    <img src="player1.jpg" alt="Player 1" class="player-img">
-                    <div class="player-info">
-                        <div class="player-name">Player 1</div>
-                        <div class="player-score">♦ 1,600</div>
+                <div class="players-grid">
+                    {% for player in players %}
+                    <div class="player" id="player-{{ player.id }}">
+                        <img src="{{ player.avatar }}" alt="Image" class="player-img">
+                        <div class="player-info">
+                            <div class="player-name">{{ player.username }}</div>
+                            <div class="player-coins">♦ {{ player.coins }}</div>
+                        </div>
                     </div>
+                    {% endfor %}
                 </div>
-                <div class="player top-right" id="player-2">
-                    <img src="player2.jpg" alt="Player 2" class="player-img">
-                    <div class="player-info">
-                        <div class="player-name">Player 2</div>
-                        <div class="player-score">♦ 3,200</div>
-                    </div>
-                </div>
-                <div class="player bottom-left" id="player-3">
-                    <img src="player3.jpg" alt="Player 3" class="player-img">
-                    <div class="player-info">
-                        <div class="player-name">Player 3</div>
-                        <div class="player-score">♦ 2,400</div>
-                    </div>
-                </div>
-                <div class="player bottom-right" id="player-4">
-                    <img src="player4.jpg" alt="Player 4" class="player-img">
-                    <div class="player-info">
-                        <div class="player-name">Player 4</div>
-                        <div class="player-score">♦ 4,800</div>
-                    </div>
-                </div>
-                
+             
                 <!-- Center Content -->
                 <div class="center-content">
                     <div class="table-limit">Table Limit</div>
-                    <div class="table-pot" id="table-pot">120,000</div>
-                    <div class="current-bet" id="current-bet">♦ 12,800</div>
+                    <div class="table-pot">120,000</div>
+                    <div class="current-bet">♦ 12,800</div>
                     <div class="progress-bar"><div class="progress"></div></div>
                     <div class="cards" id="player-cards">
                         <div class="card">A♥</div>
@@ -71,11 +54,9 @@
             </div>
         </div>
     </div>
-
-    
-
 </body>
 </html>
+    
 <script>
    console.log("Loading Javascript");
     let gameRoomId = "{{ game_room_id }}";  // Ensure this value is correctly rendered from the context
@@ -90,9 +71,16 @@ socket.onopen = function(e) {
 socket.onmessage = function(e) {
     const data = JSON.parse(e.data);
     console.log("Received game data:", data);
-    updateGameUI(data);
-    if (data.players) {
-        updatePlayersList(data.players);
+    console.log("Keys in received data:", Object.keys(data));
+
+    if (data.type === "game_update") {
+        if (data.players) {
+            updatePlayersList(data.players);
+        } else {
+            console.error("No players data received!");
+        }
+        updateGameUI(data);
+
     }
     if (data.type === "player_disconnected") {
         // Handle player leaving scenario
@@ -101,51 +89,113 @@ socket.onmessage = function(e) {
     }
 };
 
+socket.onclose = function(e) {
+    console.log("Disconnected. Attempting to reconnect...");
+    setTimeout(function() {
+        location.reload(); // Reload the page to re-establish connection
+    }, 2000);
+};
+
+function updatePlayersList(players) {
+    console.log("updatePlayersList called with players:", players);  // Log the players array
+
+    const playerList = document.querySelector(".players-grid");
+    playerList.innerHTML = "";  // Clear existing player list
+
+    players.forEach(player => {
+        console.log(`Processing player: ${player.id}`);  // Log player ID
+
+       // const li = document.createElement("li");
+       // li.textContent = `${player.username} (${player.status})`;
+       // playerList.appendChild(li);
+
+        // Update the player UI section with the latest data
+        const playerElement = document.querySelector(`#player-${player.id}`);
+        if (playerElement) {
+            // Update existing player
+            const playerInfo = playerElement.querySelector('.player-info');
+            playerInfo.querySelector('.player-name').textContent = player.username;
+            playerInfo.querySelector('.player-coins').textContent = `♦ ${player.coins}`;
+            playerInfo.querySelector('.player-img').src = player.avatar;
+            playerElement.className = `player ${player.position}`;  // Update the position dynamically
+ 
+        } else {
+            // Add new player to the table if not already in the UI
+            const playerDiv = document.createElement('div');
+            playerDiv.classList.add('player', player.position);
+            playerDiv.id = `player-${player.id}`;
+            
+            playerDiv.innerHTML = `
+                <img src="${player.avatar}" alt="Image" class="player-img">
+                <div class="player-info">
+                    <div class="player-name">${player.username}</div>
+                    <div class="player-coins">♦ ${player.coins}</div>
+                </div>
+            `;
+
+            playerList.appendChild(playerDiv);
+        }
+    });
+}
+
+function updateGameUI(data) {
+    console.log("Updating game UI with data:", data);  // Log the data object
+    console.log("table-pot", data.table_pot);
+    console.log("pot", data.pot);
+    // Update table pot and current bet
+    const tablePotElement = document.querySelector(".table-pot");
+   // tablePotElement.innerHTML = "";  // Clear existing table pot
+    if (tablePotElement) {
+        if (data.table_pot !== undefined) {
+            tablePotElement.textContent = `♦ ${data.table_pot}`;
+        } else {
+            console.error("table_pot is undefined in the received data");
+        }
+    } else {
+        console.error("Element with ID 'table-pot' not found! Ensure it exists in the HTML.");
+    }
+
+    const currentBetElement = document.querySelector(".current-bet");
+    if (currentBetElement) {
+        if (data.pot !== undefined) {
+            currentBetElement.textContent = `♦ ${data.pot}`;
+        } else {
+            console.error("Current pot is undefined in the received data");
+        }
+    } else {
+        console.error("Element with ID 'current-pot' not found!");
+    }
+   
+    // Update cards in the center content
+   // const cardsContainer = document.getElementById("player-cards");
+  //  cardsContainer.innerHTML = "";  // Clear existing cards
+  //  data.cards.forEach(card => {
+ //       const cardDiv = document.createElement("div");
+ //       cardDiv.classList.add("card");
+ //       cardDiv.textContent = card;
+ //       cardsContainer.appendChild(cardDiv);
+   // });
+}
+
+
+
 function removePlayerFromUI(playerId) {
+    console.log("Attempting to remove player with ID:", playerId); // Check player ID
     const playerElement = document.getElementById(`player-${playerId}`);
+    console.log("Player element:", playerElement);  // Log player element
     if (playerElement) {
         playerElement.remove();
         console.log(`Player ${playerId} removed from UI`);
     }
 }
 
-function updatePlayersList(players) {
-    const playerList = document.getElementById("player-list");
-    playerList.innerHTML = "";
-
-    players.forEach(player => {
-        const li = document.createElement("li");
-        li.textContent = `${player.username} (${player.status})`;
-        playerList.appendChild(li);
-    });
-}
-
-socket.onclose = function(e) {
-    console.log("Disconnected from game room");
-};
-
-function updateGameUI(data) {
-    document.getElementById("table-pot").textContent = data.pot;
-    document.getElementById("current-bet").textContent = `♦ ${data.current_bet}`;
-    
-    if (data.players) {
-        data.players.forEach(player => {
-            const playerElement = document.querySelector(`#player-${player.id} .player-score`);
-            if (playerElement) {
-                playerElement.textContent = player.status;
-            }
-        });
-    }
-}
-
-
-const exitButton = document.getElementById("exit-game-btn");
+{% comment %} const exitButton = document.getElementById("exit-game-btn");
 
 exitButton.addEventListener("click", function() {
     // Redirect to the interface page
     window.location.href = "/gamedevelopment/interface/";
 
-});
+}); {% endcomment %}
 
 
 
@@ -180,3 +230,4 @@ exitButton.addEventListener("click", function() {
 // document.getElementById("sideshow-btn").addEventListener("click", requestSideshow); 
 
 </script>
+{% endblock content%}

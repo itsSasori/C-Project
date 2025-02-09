@@ -155,3 +155,50 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+import os
+from django.conf import settings
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "file": {
+            "level": "DEBUG",  # Save all debug and above level logs to file
+            "class": "logging.FileHandler",
+            "filename": os.path.join(settings.BASE_DIR, "gamedevelpment_logs.log"),  # Save logs to a file
+            "formatter": "verbose",
+        },
+        "console": {
+            "level": "DEBUG",  # Display all debug and above level logs in console
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": "ERROR",  # Capture only errors from Django logs (disable SQL queries)
+            "propagate": False,  # Disable propagation to root logger
+        },
+        "django.db.backends": {
+            "handlers": ["console", "file"],  # Remove SQL query logs by capturing only errors
+            "level": "ERROR",  # Disable SQL query logs
+            "propagate": False,
+        },
+        "gamedevelopment": {  # Custom logger for your game-related logs
+            "handlers": ["console", "file"],
+            "level": "DEBUG",  # Capture all debug and above level logs for your app
+            "propagate": False,  # Prevent propagation to Django logger
+        },
+    },
+}

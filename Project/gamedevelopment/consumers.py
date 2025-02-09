@@ -5,26 +5,42 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.exceptions import ObjectDoesNotExist
-#Create your consumers.py here:
+from django.db import IntegrityError
+import logging
 
+logger = logging.getLogger('gamedevelopment')
+
+#Create your consumers.py here:
 class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        """Handles a player connecting to a game room."""
+        await self.accept()
         self.game_room_id = self.scope['url_route']['kwargs']['game_room_id']
         self.room_group_name = f'game_{self.game_room_id}'
 
-        # Fetch game room and player details
         self.game_room = await self.get_game_room(self.game_room_id)
-        self.player = await self.get_player(self.scope["user"], self.game_room)
+        logger.debug(self.game_room)
 
-        # If the player does not exist, create a new one
+        if not self.game_room:
+            await self.send(text_data=json.dumps({"error": "Game room not found"}))
+            await self.close()
+            return
+
+        self.player = await self.get_player(self.scope["user"], self.game_room)
+        
+
         if not self.player:
             self.player = await self.create_player(self.scope["user"], self.game_room)
+            logger.debug(self.player)
 
-        # Join WebSocket group
+        # Rejoin the game group after a reload
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
-        await self.accept()
-   
+        
+        # Notify that the player has reconnected
+        await self.send(text_data=json.dumps({"status": "reconnected", "game_room_id": self.game_room_id}))
+
+        await self.send_game_data()
+
+
     async def disconnect(self, close_code):
         """Handles player exit in real-time."""
         if self.game_room and self.player:
@@ -61,24 +77,98 @@ class GameConsumer(AsyncWebsocketConsumer):
     def get_player_user_id(self, player):
     #Fetch the player user id.
         return player.user.id
+    
 
+        # In send_game_data
+    async def send_game_data(self):
+        print("send_game_data function triggered.")
+        players = await self.get_players()  # Fetch players
+
+        # Debugging output
+        logger.debug(f" Sending Game Data for Table {self.game_room.id}")
+        logger.debug(f" Found {len(players)} players:")
+        
+        if players:
+            for p in players:
+                logger.debug(f"  - {p['username']} (ID: {p['id']}, Coins: {p['coins']},Avatar: {p['avatar']}, Position: {p['position']})")
+        else:
+            logger.debug("No players found for this game room.")
+        
+        game_data = {
+            "type":"game_update",
+            "game_room_id": self.game_room.id,
+            "players": players,  # Ensure players are included in the message
+            "table_pot":self.game_room.table_limit,
+            "pot": self.game_room.current_pot,
+            "current_turn": self.game_room.current_turn,
+            "status": self.game_room.is_active
+        }
+
+        # Send data to WebSocket group
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {"type": "game_update", "data": game_data}
+        )
 
     async def game_update(self, event):
-        """Sends game updates to the client."""
+        """Handles a game update event and updates the UI."""
         await self.send(text_data=json.dumps(event["data"]))
+
+    # Inside get_players
+    async def get_players(self):
+        """Fetches all players asynchronously."""
+        logger.debug("Fetching players...")  # Log when the function is called
+
+        players = await self._fetch_players()  # Call the sync DB query asynchronously
+
+        # If no players are returned, this could indicate an issue with the relationship
+        if not players:
+            logger.debug(f"No players associated with game room {self.game_room.id}")
+        
+        player_data = []
+        positions = ["top-left", "top-right", "bottom-left", "bottom-right"]  # Define available positions
+        for idx, player in enumerate(players):
+            player_info = {
+                "id": player.user.id,
+                "username": player.user.username,
+                "coins": player.user.coins,
+                "avatar": player.user.avatar.url if player.user.avatar else "/media/avatars/default.png",
+                "position": positions[idx % len(positions)]  # Assign a position dynamically
+            
+            }
+            player_data.append(player_info)
+
+        return player_data
+
+
+    @database_sync_to_async
+    def _fetch_players(self):
+        """Sync function to fetch players safely."""
+        from .models import Player
+       # Using select_related to optimize database queries
+        players = list(Player.objects.select_related('user').filter(table=self.game_room))
+        logger.debug(players)
+        return players
+        return players
+
+
 
     @database_sync_to_async
     def get_game_room(self, game_room_id):
         """Fetches the game room by ID."""
         from .models import GameTable
         try:
-            return GameTable.objects.get(id=game_room_id)
+            game_room = GameTable.objects.get(id=game_room_id)
+            logger.debug(f"Game Room {game_room_id} found: {game_room}")
+            return game_room
         except ObjectDoesNotExist:
+            logger.error(f"Game Room {game_room_id} not found!")
             return None
+
 
     @database_sync_to_async
     def get_player(self, user, game_room):
-        """Fetches the player by user and game table."""
+        # Fetches the player by user and game table.
         from .models import Player
         try:
             return Player.objects.get(user=user, table=game_room)
@@ -87,8 +177,10 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def create_player(self, user, game_room):
-        """Creates a new player if not found."""
+        # """Creates a new player if not found."""
         from .models import Player
+        if not game_room:
+            raise ValueError("Invalid game room")
         return Player.objects.create(user=user, table=game_room)
 
     @database_sync_to_async
@@ -100,8 +192,7 @@ class GameConsumer(AsyncWebsocketConsumer):
     def get_active_players_count(self):
         """Gets the count of players who haven't packed."""
         return self.game_room.players.exclude(is_packed=True).count()
-
-
+    
     async def receive(self, text_data):
         try:
             text_data_json = json.loads(text_data)
@@ -116,9 +207,15 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.handle_sideshow(player_id, text_data_json.get('opponent_id'))
             elif action == 'next_turn':
                 await self.next_turn()
+
+            # Ensure this is called to send the game data to WebSocket after any action
+            await self.send_game_data()
+        except IntegrityError as e:
+            await self.send(text_data=json.dumps({'error': 'Database error: ' + str(e)}))
+        except ObjectDoesNotExist as e:
+            await self.send(text_data=json.dumps({'error': 'Object not found: ' + str(e)}))
         except Exception as e:
             await self.send(text_data=json.dumps({'error': str(e)}))
-    
 
     # async def handle_bet(self, player_id, amount):
     #     player = await self.get_player(player_id)
@@ -181,17 +278,3 @@ class GameConsumer(AsyncWebsocketConsumer):
     #     card_values = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
     #                    "J": 11, "Q": 12, "K": 13, "A": 14}
     #     return sum(card_values[card.split(" ")[0]] for card in hand_cards.split(","))
-    
-    # async def send_game_data(self):
-    #     game_data = {
-    #         "game_room_id": self.game_room.id,
-    #         "players": await self.get_players(),
-    #         "pot": self.game_room.pot,
-    #         "current_turn": self.game_room.current_turn,
-    #         "status": self.game_room.status
-    #     }
-    #     await self.channel_layer.group_send(
-    #         self.room_group_name,
-    #         {"type": "game_update", "data": game_data}
-    #     )
-    

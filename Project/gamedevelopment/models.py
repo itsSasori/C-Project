@@ -23,11 +23,7 @@ class GameTable(models.Model):
     def __str__(self):
         return f'{self.name}Game-Table -{self.id}'
     
-    def delete(self, *args, **kwargs):
-        if GameTable.objects.count() <= 1:
-            # Instead of preventing deletion, create a new game table first
-            GameTable.objects.create(created_by=None)
-        super().delete(*args, **kwargs)
+    
 
 
 

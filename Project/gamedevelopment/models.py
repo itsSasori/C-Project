@@ -4,6 +4,7 @@ from django.db import models
 from django.utils.timezone import now
 from django.core.validators import MinValueValidator
 from django.conf import settings
+from django.utils import timezone
 
 # Create your models here.
 
@@ -17,7 +18,7 @@ class GameTable(models.Model):
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL, null=True, blank=True, related_name='created_games')
     is_active = models.BooleanField(default=True)
     current_turn = models.IntegerField(default=0)  # The player ID whose turn it is
-    round_status = models.CharField(max_length=50, choices=[('betting', 'Betting'), ('waiting', 'Waiting'), ('showdown', 'Showdown')])
+    round_status = models.CharField(max_length=50,default="waiting", choices=[('waiting', 'Waiting'),('betting', 'Betting'),('distribution', 'Distribution'), ('showdown', 'Showdown')])
     round_number = models.IntegerField(default=1)
 
     def __str__(self):
@@ -39,9 +40,6 @@ class Player(models.Model):
 
     def __str__(self):
         return f"{self.user.username}-Game-Table-{self.table.id}"
-    
-    def is_packed(self):
-        return self.is_packed == False
 
 
 class Card(models.Model):

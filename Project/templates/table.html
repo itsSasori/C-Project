@@ -92,8 +92,8 @@ socket.onmessage = function(e) {
 socket.onclose = function(e) {
     console.log("Disconnected. Attempting to reconnect...");
     setTimeout(function() {
-        location.reload(); // Reload the page to re-establish connection
-    }, 2000);
+       window.location.href = '/gamedevelopment/interface/'; // Redirect to home page
+    }, 1000);
 };
 
 function updatePlayersList(players) {

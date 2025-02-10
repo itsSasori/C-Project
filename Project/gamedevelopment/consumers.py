@@ -2,6 +2,7 @@
 import asyncio
 from datetime import datetime
 import json
+import random
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.exceptions import ObjectDoesNotExist
@@ -31,7 +32,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         if not self.player:
             self.player = await self.create_player(self.scope["user"], self.game_room)
             logger.debug(self.player)
-
+        
         # Rejoin the game group after a reload
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         
@@ -39,6 +40,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({"status": "reconnected", "game_room_id": self.game_room_id}))
 
         await self.send_game_data()
+
+        await self.start_game()
 
 
     async def disconnect(self, close_code):
@@ -149,7 +152,6 @@ class GameConsumer(AsyncWebsocketConsumer):
         players = list(Player.objects.select_related('user').filter(table=self.game_room))
         logger.debug(players)
         return players
-        return players
 
 
 
@@ -191,8 +193,81 @@ class GameConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_active_players_count(self):
         """Gets the count of players who haven't packed."""
-        return self.game_room.players.exclude(is_packed=True).count()
+        count=self.game_room.players.exclude(is_packed=True).count()
+        logger.debug(f"Active players count: {count}")
+        return count
     
+    async def start_game(self):
+        logger.debug("Checking game status...")
+        player_count = await self.get_active_players_count()
+        await self.send_game_data()
+
+        if player_count >=2:
+            logger.debug("Game is ready to start!")
+            await self.send_game_data()
+            await asyncio.sleep(5)
+            await self.update_game_state("distribution")
+            await self.distribute_cards()  # Distribute cards when round status is "distribution"
+
+
+    @database_sync_to_async
+    def update_game_state(self, state):
+
+        """Updates the game state."""
+        self.game_room.round_status = state
+        self.game_room.save()
+        logger.debug(f"Game state updated to {self.game_room.round_status}")
+
+    async def distribute_cards(self):
+        players = await self.get_players()  # Get the players in the game
+
+        """Distributes cards to players."""
+
+        logger.debug("Distributing cards...")
+        # Create a deck of cards
+        suits = ['♠', '♥', '♦', '♣']
+        ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+        deck = [rank + suit for suit in suits for rank in ranks]
+        random.shuffle(deck)
+
+        cards_per_player = 3  # Number of cards per player in Teen Patti
+
+
+        for player in players:
+            # Give 3 cards to each player
+            player_cards = deck[:cards_per_player]
+            deck = deck[cards_per_player:]
+            logger.debug(f"Player {player['username']} got {player_cards}")
+
+            for card in player_cards:
+                # Assign the card to the player (you can store this in a player attribute or model)
+                await self.assign_card_to_player(player['id'], card)
+
+        await self.update_game_state("betting")  # Update game state to 'cards_distributed'
+
+    async def assign_card_to_player(self, player_id, card):
+        # """Assigns a card to a player"""
+        player = await self.get_player_by_id(player_id)
+        player.hand_cards.append(card)
+        await self.save_player(player)
+        # logger.debug(f"Card {card} assigned to player {player.user.username} to player {player_id}")
+    
+    
+    @database_sync_to_async
+    def save_player(self, player):
+        player.save()
+
+    @database_sync_to_async
+    def get_player_by_id(self, player_id):
+        from .models import Player
+        """Fetch a player by their user's ID."""
+        try:
+            player = Player.objects.get(user__id=player_id)
+            return player
+        except Player.DoesNotExist:
+            logger.error(f"Player with user ID {player_id} does not exist!")
+            return None
+        
     async def receive(self, text_data):
         try:
             text_data_json = json.loads(text_data)
@@ -209,7 +284,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.next_turn()
 
             # Ensure this is called to send the game data to WebSocket after any action
-            await self.send_game_data()
+        #   await self.send_game_data()
         except IntegrityError as e:
             await self.send(text_data=json.dumps({'error': 'Database error: ' + str(e)}))
         except ObjectDoesNotExist as e:

@@ -10,7 +10,7 @@ from django.utils import timezone
 
 class GameTable(models.Model):
     name = models.CharField(max_length=255)
-    max_players = models.IntegerField(default=2)
+    max_players = models.IntegerField(default=3)
     table_limit = models.PositiveIntegerField(default=120000)  # As seen in the image
     current_pot = models.PositiveIntegerField(default=0)  # Total coins bet in the game
     created_at = models.DateTimeField(auto_now_add=True)
@@ -40,20 +40,12 @@ class Player(models.Model):
 
     def __str__(self):
         return f"{self.user.username}-Game-Table-{self.table.id}"
-
-
-class Card(models.Model):
-    rank = models.CharField(max_length=10)
-    suit = models.CharField(max_length=10)
-
-    def __str__(self):
-        return f"{self.rank} of {self.suit}"
     
 
 class Bet(models.Model):
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="bets")
     amount = models.PositiveIntegerField()
-    bet_action = models.CharField(max_length=50, choices=[('blind', 'Blind'),('chaal', 'Chaal'), ('pack', 'Pack'), ('sideshow', 'Sideshow')])
+    bet_action = models.CharField(max_length=50, choices=[('blind', 'Blind'),('seen', 'Seen'), ('pack', 'Pack'), ('sideshow', 'Sideshow')])
     timestamp = models.DateTimeField(auto_now_add=True)
 
 class Transaction(models.Model):

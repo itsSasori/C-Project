@@ -31,7 +31,7 @@ def interface(request):
 @login_required(login_url='/authentication/login/')
 def game_table(request, game_room_id=None):
 #    Ensure the URL always uses the correct game_room_id from session.
-
+    user=request.user
     session_game_room_id = request.session.get('game_room_id', None)
 
     #  If session has a game_room_id and the URL does not match, redirect
@@ -59,7 +59,7 @@ def game_table(request, game_room_id=None):
         # Redirect to the correct game room
         return redirect(f'/gamedevelopment/game/{game_room.id}/')
 
-    return render(request, 'table.html', {'game_room_id': game_room.id})
+    return render(request, 'table.html', {'game_room_id': game_room.id,'user':user})
 
 
 

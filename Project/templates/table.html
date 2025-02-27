@@ -20,15 +20,31 @@
             
             <!-- Poker Table -->
             <div class="table">
+                <p>User ID: {{ user.id }}</p>
+
                 <!-- Players -->
                 <div class="players-grid">
                     {% for player in players %}
                     <div class="player" id="player-{{ player.id }}">
                         <img src="{{ player.avatar }}" alt="Image" class="player-img">
                         <div class="player-info">
+
                             <div class="player-name">{{ player.username }}</div>
-                            <div class="player-coins">♦ {{ player.coins }}</div>
+                            <div class="player-coins"> {{ player.coins }}</div> 
+                            <div class="player-current-bet" id="player-current-bet-{{ player.id }}">♦ {{ player.current_bet }}</div> <!-- Add this line -->
+
                         </div>
+                        <!-- Player Cards -->
+                        <div class="player-cards" id="player-cards-{{ player.id }}">
+                            {% for card in player.cards %}
+                            <div class="card">{{ card }}</div> 
+                            {% endfor %}
+                        </div>
+                          <!-- See Cards Button (Visible Only to This Player) -->
+                             <!-- Show "See Cards" Button only for the player viewing the page -->    
+                          {% if player.id == user.id %}
+                          <button class="see-cards-btn" id="see-cards-btn-{{ player.id }}" onclick="toggleCards({{ player.id }})">See Cards</button>
+                        {% endif %}
                     </div>
                     {% endfor %}
                 </div>
@@ -37,30 +53,36 @@
                 <div class="center-content">
                     <div class="table-limit">Table Limit</div>
                     <div class="table-pot">120,000</div>
-                    <div class="current-bet">♦ 12,800</div>
+                    <div class="table-current-bet">♦ 12,800</div>
                     <div class="progress-bar"><div class="progress"></div></div>
-                    <div class="cards" id="player-cards">
+                    {% comment %} <div class="cards" id="player-cards">
                         <div class="card">A♥</div>
                         <div class="card">K♠</div>
                         <div class="card">Q♠</div>
-                    </div>
+                    </div> {% endcomment %}
                 </div>
             </div>
             
             <!-- Bottom Controls -->
-            <div class="controls">
-                <button class="control-button red" id="pack-btn">Pack</button>
-                <button class="control-button purple" id="sideshow-btn">Sideshow</button>
+            <div class="controls" id="controls">
+                <button class="control-button red" id="pack-btn" onclick="packGame()">Pack</button>
+                <button class="control-button purple" id="sideshow-btn" onclick="requestSideshow()">Sideshow</button>
+                <button class="control-button green" id="bet-btn" onclick="placeBet()">Bet</button> 
+                <button class="control-button blue" id="double-bet-btn" onclick="placeDoubleBet()">Double Bet</button>
             </div>
         </div>
     </div>
 </body>
 </html>
-    
+{% endblock content%}
 <script>
+    let currentUserId = "{{ user.id }}";  // Store Django user ID in JavaScript
    console.log("Loading Javascript");
     let gameRoomId = "{{ game_room_id }}";  // Ensure this value is correctly rendered from the context
     console.log("Game Room ID:", gameRoomId);
+    let playersData = [];  // Store the latest players data globally
+    let currentTurn = 0;
+    let tableMinimumBet = 0; // Add this globally to track the table minimum
 
 const socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameRoomId}/`);
 
@@ -74,12 +96,22 @@ socket.onmessage = function(e) {
     console.log("Keys in received data:", Object.keys(data));
 
     if (data.type === "game_update") {
+        currentTurn = data.current_turn;
+        round_status = data.round_status;
+        tableMinimumBet = Math.max(...playersData.map(p => p.current_bet || 0)); // Update table minimum
+        console.log("tableMinimumBet:",tableMinimumBet);
+        console.log("Round Status:", round_status);
+
         if (data.players) {
+            playersData = data.players;  // Update global players data
             updatePlayersList(data.players);
         } else {
             console.error("No players data received!");
         }
+        updateControls(data);
         updateGameUI(data);
+        updateBetButton();  // Update the bet button text dynamically
+        updateDoubleBetButton();  // Update the double bet button text dynamically
 
     }
     if (data.type === "player_disconnected") {
@@ -104,11 +136,6 @@ function updatePlayersList(players) {
 
     players.forEach(player => {
         console.log(`Processing player: ${player.id}`);  // Log player ID
-
-       // const li = document.createElement("li");
-       // li.textContent = `${player.username} (${player.status})`;
-       // playerList.appendChild(li);
-
         // Update the player UI section with the latest data
         const playerElement = document.querySelector(`#player-${player.id}`);
         if (playerElement) {
@@ -116,67 +143,109 @@ function updatePlayersList(players) {
             const playerInfo = playerElement.querySelector('.player-info');
             playerInfo.querySelector('.player-name').textContent = player.username;
             playerInfo.querySelector('.player-coins').textContent = `♦ ${player.coins}`;
+            playerInfo.querySelector('.player-current-bet').textContent = `♦ ${player.current_bet}`; // Ensure this line is present
             playerInfo.querySelector('.player-img').src = player.avatar;
             playerElement.className = `player ${player.position}`;  // Update the position dynamically
+            updatePlayerCards(player.id, player.cards);
+
  
         } else {
             // Add new player to the table if not already in the UI
             const playerDiv = document.createElement('div');
             playerDiv.classList.add('player', player.position);
             playerDiv.id = `player-${player.id}`;
-            
+            let buttonHTML = "";
+            if (player.id == currentUserId && round_status == "betting") {
+                buttonHTML = `<button class="see-cards-btn" id="see-cards-btn-${player.id}" onclick="toggleCards(${player.id})">See Cards</button>`;
+            }
             playerDiv.innerHTML = `
                 <img src="${player.avatar}" alt="Image" class="player-img">
                 <div class="player-info">
                     <div class="player-name">${player.username}</div>
                     <div class="player-coins">♦ ${player.coins}</div>
+                    <div class="player-current-bet" id="player-current-bet-${player.id}">♦ ${player.current_bet}</div> <!-- Ensure this line is present -->
+
                 </div>
+                <div class="player-cards" id="player-cards-${player.id}" style="display:none;"></div>  <!-- Cards go here (hidden initially) -->
+                ${buttonHTML}
             `;
 
             playerList.appendChild(playerDiv);
         }
+        updatePlayerCards(player.id, player.cards);
+    });
+
+}
+
+// Function to toggle the visibility of the player's cards
+function toggleCards(playerId) {
+    const cardsContainer = document.querySelector(`#player-cards-${playerId}`);
+    const seeButton = document.querySelector(`#see-cards-btn-${playerId}`);
+
+    if (cardsContainer.style.display === "none") {
+        cardsContainer.style.display = "block";
+        seeButton.textContent = "Cards Seen";
+        const data = {
+            action: 'toggle_seen',
+            player_id: currentUserId
+        };
+        socket.send(JSON.stringify(data));
+    }
+}
+
+function updatePlayerCards(playerId, cards) {
+    console.log(`Updating cards for Player ${playerId}:`, cards);
+    
+    const playerCardsContainer = document.querySelector(`#player-cards-${playerId}`);
+    if (!playerCardsContainer) return;
+
+    playerCardsContainer.innerHTML = "";  // Clear previous cards
+
+    cards.forEach(card => {
+        const cardElement = document.createElement('div');
+        cardElement.classList.add('card');
+        cardElement.textContent = card;  // Assuming cards are sent in "A♥", "K♠" format
+        playerCardsContainer.appendChild(cardElement);
     });
 }
 
 function updateGameUI(data) {
-    console.log("Updating game UI with data:", data);  // Log the data object
+    console.log("Updating game UI with data:", data);
     console.log("table-pot", data.table_pot);
     console.log("pot", data.pot);
-    // Update table pot and current bet
     const tablePotElement = document.querySelector(".table-pot");
-   // tablePotElement.innerHTML = "";  // Clear existing table pot
-    if (tablePotElement) {
-        if (data.table_pot !== undefined) {
-            tablePotElement.textContent = `♦ ${data.table_pot}`;
-        } else {
-            console.error("table_pot is undefined in the received data");
-        }
-    } else {
-        console.error("Element with ID 'table-pot' not found! Ensure it exists in the HTML.");
+    if (tablePotElement && data.pot !== undefined) {  // Use 'pot' for consistency
+        tablePotElement.textContent = `♦ ${data.pot}`;
     }
-
-    const currentBetElement = document.querySelector(".current-bet");
-    if (currentBetElement) {
-        if (data.pot !== undefined) {
-            currentBetElement.textContent = `♦ ${data.pot}`;
-        } else {
-            console.error("Current pot is undefined in the received data");
-        }
-    } else {
-        console.error("Element with ID 'current-pot' not found!");
+    const currentBetElement = document.querySelector(".table-current-bet");
+    if (currentBetElement && data.pot !== undefined) {
+        currentBetElement.textContent = `♦ ${data.pot}`;
     }
-   
-    // Update cards in the center content
-   // const cardsContainer = document.getElementById("player-cards");
-  //  cardsContainer.innerHTML = "";  // Clear existing cards
-  //  data.cards.forEach(card => {
- //       const cardDiv = document.createElement("div");
- //       cardDiv.classList.add("card");
- //       cardDiv.textContent = card;
- //       cardsContainer.appendChild(cardDiv);
-   // });
 }
 
+function updateControls(data) {
+    const controls = document.getElementById("controls");
+    const players = data.players;
+    const round_status = data.round_status;
+    const currentTurnIndex = data.current_turn;
+    console.log("Current turn index:", currentTurnIndex);
+    console.log("Current user ID:", currentUserId);
+   
+    if ( round_status === "betting" && players && players[currentTurnIndex]) {
+        console.log("Player at current turn index:", players[currentTurnIndex]);
+        console.log("Player ID at current turn index:", players[currentTurnIndex].id);
+        if (Number(players[currentTurnIndex].id) === Number(currentUserId)) {
+            controls.style.display = "block";
+            console.log("Controls displayed for current user.");
+        } else {
+            console.error(`Player at index ${currentTurnIndex} does not match current user ID`);
+            controls.style.display = "none";
+        }
+    } else {
+        console.error(`Player at index ${currentTurnIndex} not found`);
+        controls.style.display = "none";
+    }
+}
 
 
 function removePlayerFromUI(playerId) {
@@ -196,38 +265,132 @@ exitButton.addEventListener("click", function() {
     window.location.href = "/gamedevelopment/interface/";
 
 }); {% endcomment %}
+let isBetting = false;
+
+function updateBetButton() {
+    const betButton = document.getElementById("bet-btn");
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    if (currentPlayer && Number(playersData[currentTurn].id) === Number(currentUserId)) {
+        const prevPlayerIndex = (currentTurn - 1 + playersData.length) % playersData.length;
+        const prevPlayer = playersData[prevPlayerIndex];
+        const minBet = currentPlayer.is_blind ? prevPlayer.current_bet : prevPlayer.current_bet * 2;
+        console.log(`Bet button - prevPlayer.current_bet: ${prevPlayer.current_bet}, minBet: ${minBet}`);
+        betButton.textContent = `Bet ${minBet}`;
+        betButton.onclick = () => placeBet(minBet);
+    }
+    }
+
+
+function placeBet(amount) {
+        if (isBetting) {
+            console.log("Bet is already in progress. Please wait.");
+            return;
+        }
+        isBetting = true;
+        const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+        if (!currentPlayer) return;
+
+        const prevPlayerIndex = (currentTurn - 1 + playersData.length) % playersData.length;
+        const prevPlayer = playersData[prevPlayerIndex];
+        const minBet = currentPlayer.is_blind ? prevPlayer.current_bet : prevPlayer.current_bet * 2;
+        const betAmount = Math.max(amount, minBet); // Use passed amount or minimum
+
+        const data = {
+            action: 'place_bet',
+            player_id: currentUserId,
+            amount: betAmount
+        };
+        socket.send(JSON.stringify(data));
+        console.log("Bet placed:", betAmount);
+
+        document.getElementById("bet-btn").disabled = true;
+        setTimeout(() => {
+            isBetting = false;
+            document.getElementById("bet-btn").disabled = false;
+        }, 1000);
+    }
+
+
+   // Add this function to update the Double Bet button text
+   function updateDoubleBetButton() {
+    const doubleBetButton = document.getElementById("double-bet-btn");
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+
+    const prevPlayerIndex = (currentTurn - 1 + playersData.length) % playersData.length;
+    const prevPlayer = playersData[prevPlayerIndex];
+
+    const doubleAmount = currentPlayer.is_blind ? prevPlayer.current_bet * 2 : 
+                         (prevPlayer.is_blind ? prevPlayer.current_bet * 4 : prevPlayer.current_bet * 2);
+
+    doubleBetButton.textContent = `Double Bet ${doubleAmount}`;
+    console.log(`Updated Double Bet button to: ${doubleAmount}`);
+}
+
+// Update placeDoubleBet to reflect the amount being sent
+function placeDoubleBet() {
+    if (isBetting) {
+        console.log("Bet is already in progress. Please wait.");
+        return;
+    }
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    
+    isBetting = true;
+
+    const prevPlayerIndex = (currentTurn - 1 + playersData.length) % playersData.length;
+    const prevPlayer = playersData[prevPlayerIndex];
+    
+
+    const doubleAmount = currentPlayer.is_blind ? prevPlayer.current_bet * 2 : 
+                         (prevPlayer.is_blind ? prevPlayer.current_bet * 4 : prevPlayer.current_bet * 2);
+    
+    socket.send(JSON.stringify({
+        action: 'place_double_bet',
+        player_id: currentUserId,
+        amount: doubleAmount
+    }));
+    console.log(`Double bet placed: ${doubleAmount}`);
+
+    document.getElementById("double-bet-btn").disabled = true;
+    setTimeout(() => {
+        isBetting = false;
+        document.getElementById("double-bet-btn").disabled = false;
+    }, 1000);
+}
+
+
+ function packGame() {
+     const data = {
+         action: 'pack',
+         player_id: currentUserId
+         // Player ID
+     };
+     socket.send(JSON.stringify(data));
+     document.getElementById("pack-btn").disabled = true;
+ }
 
 
 
-// function placeBet(amount) {
-//     const data = {
-//         action: 'place_bet',
-//         player_id: 1,  // Player ID
-//         amount: amount
-//     };
-//     socket.send(JSON.stringify(data));
-// }
+ function requestSideshow() {
+     const data = {
+         action: 'sideshow',
+         player_id: currentUserId,
+         opponent_id: getOpponentId() //Player ID
+     };
+     socket.send(JSON.stringify(data));
+ }
 
-// function packGame() {
-//     const data = {
-//         action: 'pack',
-//         player_id: {{ user.id }}
-//         // Player ID
-//     };
-//     socket.send(JSON.stringify(data));
-//     document.getElementById("pack-btn").disabled = true;
-// }
-
-// function requestSideshow() {
-//     const data = {
-//         action: 'sideshow',
-//         player_id: {{ user.id }}  // Player ID
-//     };
-//     socket.send(JSON.stringify(data));
-// }
-
-// document.getElementById("pack-btn").addEventListener("click", packGame);
-// document.getElementById("sideshow-btn").addEventListener("click", requestSideshow); 
+    function getOpponentId() {
+    // Implement logic to get the opponent ID for sideshow
+    // This is just a placeholder implementation
+        const players = document.querySelectorAll('.player');
+        for (let player of players) {
+            if (player.id !== `player-${currentUserId}`) {
+                return player.id.replace('player-', '');
+            }
+        }
+        return null;
+}
+ document.getElementById("pack-btn").addEventListener("click", packGame);
+ document.getElementById("sideshow-btn").addEventListener("click", requestSideshow); 
 
 </script>
-{% endblock content%}

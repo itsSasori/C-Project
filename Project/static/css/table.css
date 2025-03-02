@@ -205,3 +205,6 @@ body {
     background-color: #ff2a2a;
 }
 
+.control-button.blue {
+    background-color: blue;
+}

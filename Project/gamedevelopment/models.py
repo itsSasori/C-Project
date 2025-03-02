@@ -12,13 +12,13 @@ class GameTable(models.Model):
     name = models.CharField(max_length=255)
     max_players = models.IntegerField(default=3)
     table_limit = models.PositiveIntegerField(default=120000)  # As seen in the image
-    current_pot = models.PositiveIntegerField(default=0)  # Total coins bet in the game
+    current_pot = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     is_private = models.BooleanField(default=False)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL, null=True, blank=True, related_name='created_games')
     is_active = models.BooleanField(default=True)
     current_turn = models.IntegerField(default=0)  # The player ID whose turn it is
-    round_status = models.CharField(max_length=50,default="waiting", choices=[('waiting', 'Waiting'),('betting', 'Betting'),('distribution', 'Distribution'), ('showdown', 'Showdown')])
+    round_status = models.CharField(max_length=50, choices=[('waiting', 'Waiting'),('betting', 'Betting'),('distribution', 'Distribution'), ('showdown', 'Showdown')])
     round_number = models.IntegerField(default=1)
 
     def __str__(self):

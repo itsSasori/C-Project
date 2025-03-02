@@ -32,7 +32,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         self.player = await self.get_player(self.scope["user"], self.game_room)
         
-
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        logger.debug(f"Connected to game room {self.game_room_id}: pot = {self.game_room.current_pot}, round_status = {self.game_room.round_status}")
         if not self.player:
             self.player = await self.create_player(self.scope["user"], self.game_room)
             logger.debug(self.player)
@@ -146,7 +147,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 "coins": player.user.coins,
                 "avatar": player.user.avatar.url if player.user.avatar else "/media/avatars/default.png",
                 "position": positions[idx % len(positions)],  # Assign a position dynamically
-                "cards": player.hand_cards,
+                "cards": player.hand_cards if player.user.id == self.scope["user"].id else [],
                 "is_blind": player.is_blind,
                 "current_bet": player.current_bet  # Ensure current_bet is included
             
@@ -179,6 +180,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.update_game_state("distribution")
                 await self.distribute_cards(player_count)  # Distribute cards when round status is "distribution"
                 await self.update_game_state("betting")
+                logger.debug(f"Starting game with pot = {self.game_room.current_pot}")
                 self.game_room.current_turn = 0  # Assuming the first player is at index 0
                 await database_sync_to_async(self.game_room.save)()
 
@@ -215,9 +217,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         player = await self.get_player_by_id(player_id)
         if player:
             player.current_bet = boot_amount
-            player.user.coins -= boot_amount
             player.hand_cards.clear()  # Clear previous hand before assigning new cards
             player.hand_cards.extend(cards)  # Assign all three cards at once
+            await self.update_player_coins(player, -boot_amount)  # Deducts and saves coins
             await self.save_player(player)
             await self.update_game_room_pot(boot_amount)
         # logger.debug(f"Card {card} assigned to player {player.user.username} to player {player_id}")
@@ -227,11 +229,6 @@ class GameConsumer(AsyncWebsocketConsumer):
     def save_player(self, player):
         player.save()
     
-    @database_sync_to_async
-    def update_game_room_pot(self, boot_amount):
-        self.game_room.current_pot = F('current_pot') + boot_amount
-        self.game_room.save(update_fields=['current_pot'])
-        self.game_room.refresh_from_db()
 
     @database_sync_to_async
     def get_player_by_id(self, player_id):
@@ -281,7 +278,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         from .models import GameTable
         try:
             game_room = GameTable.objects.get(id=game_room_id)
-            logger.debug(f"Game Room {game_room_id} found: {game_room}")
+            logger.debug(f"Fetched game room {game_room_id}: pot = {game_room.current_pot}, round_status = {game_room.round_status}")
             return game_room
         except ObjectDoesNotExist:
             logger.error(f"Game Room {game_room_id} not found!")
@@ -345,20 +342,15 @@ class GameConsumer(AsyncWebsocketConsumer):
         prev_index = (current_turn_index - 1) % len(active_players)
         prev_player = active_players[prev_index]
         min_bet = prev_player.current_bet if prev_player.is_blind else prev_player.current_bet // 2
-
-        # Adjust bet based on blind/seen status
+        # Minimum bet calculation
         if player.is_blind:
-            if amount < min_bet:
-                logger.debug(f"Blind bet too low: {amount} < {min_bet}")
-                await self.send(text_data=json.dumps({'message': f'Blind bet must be at least {min_bet}'}))
-                return
+            min_bet = prev_player.current_bet if prev_player.is_blind else prev_player.current_bet // 2
         else:  # Seen player
-            if amount < min_bet * 2:
-                logger.debug(f"Seen bet too low: {amount} < {min_bet * 2}")
-                await self.send(text_data=json.dumps({'message': f'Seen bet must be at least {min_bet * 2}'}))
-                return
-            
-        # Check player's coin balance (assuming User model has 'coins' field)
+            min_bet = prev_player.current_bet * 2 if prev_player.is_blind else prev_player.current_bet
+        
+        if amount < min_bet:
+            await self.send(text_data=json.dumps({'message': f'Bet must be at least {min_bet}'}))
+            return
         user_coins = await database_sync_to_async(lambda: player.user.coins)()
         if user_coins >= amount:
             logger.debug(f"Player {player.user.username}")
@@ -388,27 +380,23 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         prev_index = (current_turn_index - 1) % len(active_players)
         prev_player = active_players[prev_index]
-        prev_bet = prev_player.current_bet
-
-        # Use the amount sent by the client instead of recalculating
-        double_amount = amount
-        logger.debug(f"Double bet received: {double_amount} for {player.user.username} (Blind: {player.is_blind}, Prev bet: {prev_bet})")
-
+        
+        logger.debug(f"Final bet amount: {amount}")
         user_coins = await database_sync_to_async(lambda: player.user.coins)()
-        if user_coins >= double_amount:
-            await self.update_player_coins(player, -double_amount)
-            await self.update_game_room_pot(double_amount)
-            await self.save_current_bet(player, double_amount)
+        if user_coins >= amount:
+            await self.update_player_coins(player, -amount)
+            await self.update_game_room_pot(amount)
+            await self.save_current_bet(player, amount)
             active_players_count = await self.get_active_players_count()
             await self.update_game_room_turn(active_players_count)
             await self.update_game_state("betting")
 
-            if active_players_count <= 1:
-                await self.declare_winner()
-            else:
-                await self.send_game_data()
+            # if active_players_count <= 1:
+            #     await self.declare_winner()
+            # else:
+            await self.send_game_data()
         else:
-            await self.send(text_data=json.dumps({'message': f'Insufficient balance for double bet! Need {double_amount}, have {user_coins}'}))
+            await self.send(text_data=json.dumps({'message': f'Insufficient balance for double bet! Need {amount}, have {user_coins}'}))
     
     @database_sync_to_async
     def update_player_coins(self, player, amount):
@@ -423,12 +411,15 @@ class GameConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def update_game_room_pot(self, amount):
         with transaction.atomic():
-            self.game_room.refresh_from_db()  # Get latest pot before update
-            logger.debug(f"Before update - Pot: {self.game_room.current_pot}")
+            self.game_room.refresh_from_db()  #Ensure latest state
+            if self.game_room.current_pot is None:
+                self.game_room.current_pot = 0  # Initialize if None
+                logger.debug(f"Initialized current_pot to 0")
+            old_pot = self.game_room.current_pot
             self.game_room.current_pot += amount
+            logger.debug(f"Pot update: {old_pot} + {amount} = {self.game_room.current_pot}")
             self.game_room.save(update_fields=['current_pot'])
-            self.game_room.refresh_from_db()  # Ensure latest value
-            logger.debug(f"After update - Pot: {self.game_room.current_pot}")
+            logger.debug(f"Updated pot to {self.game_room.current_pot}")
 
     @database_sync_to_async
     def save_current_bet(self, player, amount): 
@@ -476,17 +467,33 @@ class GameConsumer(AsyncWebsocketConsumer):
     #     await self.send_game_data()
 
     async def toggle_seen(self, player):
-        active_players = await database_sync_to_async(list)(self.game_room.players.filter(is_packed=False))
-        if self.game_room.current_turn != active_players.index(player) or player.is_packed:
-            return
-
+        # Ensure self.game_room reflects the latest database state
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        logger.debug(f"Refreshed game room: pot = {self.game_room.current_pot}, round_status = '{self.game_room.round_status}'")
+        
+        current_pot = self.game_room.current_pot if self.game_room.current_pot is not None else 0
+        current_status = self.game_room.round_status
+        logger.debug(f"Before toggle_seen: pot = {current_pot}, round_status = '{current_status}'")
+        
         player.is_blind = False
         await database_sync_to_async(player.save)()
-        await self.send_game_data()
         
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        if self.game_room.current_pot != current_pot:
+            logger.warning(f"Pot changed from {current_pot} to {self.game_room.current_pot}. Restoring...")
+            self.game_room.current_pot = current_pot
+            await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+        if self.game_room.round_status != current_status:
+            logger.warning(f"Round status changed from {current_status} to {self.game_room.round_status}. Restoring...")
+            await self.update_game_state(current_status)
+        
+        logger.debug(f"After toggle_seen: pot = {self.game_room.current_pot}, round_status = '{current_status}'")
+        await self.send_game_data()
+
+
     async def declare_winner(self, player):
         player.user.coins += self.game_room.current_pot
-        self.game_room.pot = 0
+        self.game_room.current_pot = 0
         self.game_room.is_active = False
         await database_sync_to_async(player.save)()
         await database_sync_to_async(self.game_room.save)()

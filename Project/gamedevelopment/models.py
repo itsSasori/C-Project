@@ -16,7 +16,7 @@ class GameTable(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     is_private = models.BooleanField(default=False)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL, null=True, blank=True, related_name='created_games')
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=False)
     current_turn = models.IntegerField(default=0)  # The player ID whose turn it is
     round_status = models.CharField(max_length=50, choices=[('waiting', 'Waiting'),('betting', 'Betting'),('distribution', 'Distribution'), ('showdown', 'Showdown')])
     round_number = models.IntegerField(default=1)

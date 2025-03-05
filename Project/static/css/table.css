@@ -208,3 +208,8 @@ body {
 .control-button.blue {
     background-color: blue;
 }
+.player-pack-status {
+    color: red;
+    font-size: 12px;
+    font-weight: bold;
+}

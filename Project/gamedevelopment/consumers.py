@@ -43,13 +43,35 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.accept()
         await self.send_game_data()
 
-        logger.debug("Calling send_game_data immediately upon connection")
 
+        # Only start the game if it hasn’t started yet and enough players are present
+        player_count = await self.get_active_players_count()
+        logger.debug(f"Player count: {player_count}")
+        if player_count >= 2 and self.game_room.round_status not in ['Betting', 'Distribution']:
+            logger.debug("Scheduling game start with 5-second delay")
+            asyncio.create_task(self.delayed_start_game())  # Schedule with delay
 
-        # Check if the game has already started
-        if self.game_room.round_status not in ['Betting', 'Distribution']:
-            logger.debug("Calling start_game")
-            await self.start_game()
+    async def delayed_start_game(self):
+        """Delays the game start by 5 seconds to allow more players to join."""
+        # Check if game is already starting or started
+        should_proceed = await self._check_and_lock_game_start()
+        if not should_proceed:
+            logger.debug("Game already starting or in progress, skipping delayed start")
+            return
+
+        logger.debug("Waiting 5 seconds before starting game...")
+        await asyncio.sleep(5)  # Wait 5 seconds for more players to join
+
+        # Recheck player count after delay
+        player_count = await self.get_active_players_count()
+        if player_count < 2:
+            logger.debug("Player count dropped below 2 after delay, aborting start")
+            await self._reset_is_active()
+            return
+
+        # Proceed with game start
+        logger.debug(f"Starting game with {player_count} players after delay")
+        await self.start_game()
 
 
     async def disconnect(self, close_code):
@@ -90,11 +112,14 @@ class GameConsumer(AsyncWebsocketConsumer):
         return player.user.id
     
 
+
         # In send_game_data
+    
     async def send_game_data(self):
         print("send_game_data function triggered.")
         players = await self.get_players()  # Fetch players
-
+        active_players = await self.get_active_players()  # Only active players
+        active_player_ids = [p.user.id for p in active_players]  # IDs of active players
         # Debugging output
         logger.debug(f" Sending Game Data for Table {self.game_room.id}")
         logger.debug(f" Found {len(players)} players:")
@@ -109,6 +134,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             "type":"game_update",
             "game_room_id": self.game_room.id,
             "players": players,  # Ensure players are included in the message
+            "active_players": active_player_ids,  # Include active player IDs
             "table_pot":self.game_room.table_limit,
             "pot": self.game_room.current_pot,
             "current_turn": self.game_room.current_turn,
@@ -149,6 +175,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 "position": positions[idx % len(positions)],  # Assign a position dynamically
                 "cards": player.hand_cards if player.user.id == self.scope["user"].id else [],
                 "is_blind": player.is_blind,
+                "is_packed": player.is_packed,
                 "current_bet": player.current_bet  # Ensure current_bet is included
             
             }
@@ -166,26 +193,60 @@ class GameConsumer(AsyncWebsocketConsumer):
         logger.debug(players)
         return players
 
-
-
-
     async def start_game(self):
-            logger.debug("Checking game status...")
-            player_count = await self.get_active_players_count()
-            await self.send_game_data()
+        logger.debug(f"start_game called for room {self.game_room_id}")
+        player_count = await self.get_active_players_count()
+        logger.debug(f"Player count: {player_count}")
+        await self.send_game_data()
 
-            if player_count >=2:
-                logger.debug("Game is ready to start!")
-                await asyncio.sleep(5)
-                await self.update_game_state("distribution")
-                await self.distribute_cards(player_count)  # Distribute cards when round status is "distribution"
-                await self.update_game_state("betting")
-                logger.debug(f"Starting game with pot = {self.game_room.current_pot}")
-                self.game_room.current_turn = 0  # Assuming the first player is at index 0
-                await database_sync_to_async(self.game_room.save)()
+        if player_count < 2:
+            logger.debug("Not enough players to start the game.")
+            await self._reset_is_active()
+            return
+            
+                    # Step 3: Begin game initialization
+        logger.debug("Game is ready to start!")
+        await self.update_game_state("distribution")
+        await self.distribute_cards(player_count)
 
-                await self.send_game_data()
+        # Step 4: Apply boot amounts and reset player states
+        active_players = await self.get_active_players()
+        boot_amount = 100
+        for player in active_players:
+            try:
+                logger.debug(f"Processing boot for {player.user.username}, coins before: {player.user.coins}")
+                player.is_packed = False                
+                player.current_bet = boot_amount
+                await self.update_player_coins(player, -boot_amount)
+                await self.update_game_room_pot(boot_amount)
+                await database_sync_to_async(player.save)()
+                logger.debug(f"Boot applied for {player.user.username}, coins after: {player.user.coins}")
+            except Exception as e:
+                logger.error(f"Error applying boot for {player.user.username}: {e}")
+        # Step 5: Finalize game start
+        await self.update_game_state("betting")
+        logger.debug(f"Starting game with pot = {self.game_room.current_pot}")
+        self.game_room.current_turn = 0
+        self.game_room.is_active = False
+        await database_sync_to_async(self.game_room.save)(update_fields=['current_turn', 'is_active'])
+        await self.send_game_data()
 
+# Helper method to check and lock game start atomically
+    @database_sync_to_async
+    def _check_and_lock_game_start(self):
+            with transaction.atomic():
+                self.game_room.refresh_from_db()
+                if self.game_room.is_active or self.game_room.round_status in ['Betting', 'Distribution']:
+                    return False
+                self.game_room.is_active = True
+                self.game_room.save(update_fields=['is_active'])
+                return True
+
+        # Helper method to reset is_active
+    @database_sync_to_async
+    def _reset_is_active(self):
+            self.game_room.is_active = False
+            self.game_room.save(update_fields=['is_active'])
     
     async def distribute_cards(self, active_players_count):
         """Distribute cards to the players based on the active player count."""
@@ -213,15 +274,11 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def assign_card_to_player(self, player_id, cards):
         # """Assigns a card to a player"""
-        boot_amount = 100 # Amount to be added to the pot
         player = await self.get_player_by_id(player_id)
         if player:
-            player.current_bet = boot_amount
             player.hand_cards.clear()  # Clear previous hand before assigning new cards
             player.hand_cards.extend(cards)  # Assign all three cards at once
-            await self.update_player_coins(player, -boot_amount)  # Deducts and saves coins
             await self.save_player(player)
-            await self.update_game_room_pot(boot_amount)
         # logger.debug(f"Card {card} assigned to player {player.user.username} to player {player_id}")
     
     
@@ -306,6 +363,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     def remove_player(self, player, game_room):
         """Removes a player from the game room."""
         player.delete()
+
+    async def get_active_players(self):
+        from .models import Player
+        return await database_sync_to_async(lambda: list(Player.objects.filter(
+            table=self.game_room, is_packed=False
+        ).select_related('user')))()
 
     @database_sync_to_async
     def get_active_players_count(self):
@@ -440,18 +503,80 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def handle_pack(self, player_id):
         player = await self.get_player_by_id(player_id)
-        if player:
-            player.is_packed = True
+        if not player:
+            return
+        
+        # Refresh game room state to ensure we have the latest pot value
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        current_pot = self.game_room.current_pot
+        logger.debug(f"Before packing: pot = {current_pot}, player = {player.user.username}")
+        player.is_packed = True
         await database_sync_to_async(player.save)()
         
         remaining_players = await self.get_active_players()
-        if len(remaining_players) == 1:
-            await self.declare_winner(remaining_players[0])
+        active_players_count = len(remaining_players)
+        logger.debug(f"Active players after pack: {active_players_count}")
+        if active_players_count <= 1:
+            if remaining_players:
+                logger.debug(f"Only one player left, declaring winner: {remaining_players[0].user.username}")
+                await self.declare_winner(remaining_players[0])
         else:
-            await self.next_turn()
+            # If the current turn is the packed player, advance immediately
+            active_players = await self.get_active_players()
+            if self.game_room.current_turn >= active_players_count:
+                self.game_room.current_turn = 0
+                logger.debug(f"Reset turn to 0 due to packed player")
+            else:
+                current_turn_player = active_players[self.game_room.current_turn]
+                if current_turn_player.user.id == player.user.id:
+                    logger.debug(f"Packed player was current turn, advancing turn")
+                    await self.next_turn(active_players_count)
+                else:
+                    logger.debug(f"Advancing turn normally")
+                    await self.next_turn(active_players_count)
+            # Preserve game state
+            await self.update_game_state("betting")
+            # Check pot integrity
+            await database_sync_to_async(self.game_room.refresh_from_db)()
+            if self.game_room.current_pot != current_pot:
+                logger.warning(f"Pot changed from {current_pot} to {self.game_room.current_pot} during pack, restoring")
+                self.game_room.current_pot = current_pot
+                await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+        
+        logger.debug(f"After packing: pot = {self.game_room.current_pot}")
+        await self.send_game_data()
+
+    async def next_turn(self, active_players_count):
+        players = await self.get_active_players()
+        current_turn = self.game_room.current_turn
+        
+        if current_turn >= active_players_count or current_turn < 0:
+            current_turn = 0
+        
+        # Always advance to the next active player
+        for i in range(active_players_count):
+            next_index = (current_turn + i) % active_players_count
+            if not players[next_index].is_packed:
+                self.game_room.current_turn = next_index
+                await database_sync_to_async(self.game_room.save)()
+                logger.debug(f"Turn advanced from {current_turn} to player at index {next_index}, ID: {players[next_index].user.id}")
+                break
+        else:
+            # Only declare winner if truly 1 active player remains
+            remaining_players = await self.get_active_players()
+            if len(remaining_players) == 1:
+                logger.debug(f"One active player remains: {remaining_players[0].user.id}")
+                await self.declare_winner(remaining_players[0])
+            elif len(remaining_players) == 0:
+                logger.error("No active players found, ending game")
+                await self.send(text_data=json.dumps({"error": "No active players left"}))
+                return
+            else:
+                logger.error(f"Unexpected state: {len(remaining_players)} active players, but no turn found")
+                return
         
         await self.send_game_data()
-    
+
     async def handle_sideshow(self, player_id, opponent_id):
         player = await self.get_player_by_id(player_id)
         opponent = await self.get_player_by_id(opponent_id)
@@ -492,16 +617,23 @@ class GameConsumer(AsyncWebsocketConsumer):
 
 
     async def declare_winner(self, player):
-        player.user.coins += self.game_room.current_pot
-        self.game_room.current_pot = 0
-        self.game_room.is_active = False
-        await database_sync_to_async(player.save)()
-        await database_sync_to_async(self.game_room.save)()
-        
-        await self.send(text_data=json.dumps({
-            "message": f"{player.user.username} wins the round!",
-            "winner": player.user.id
-        }))
+        if player:
+            logger.debug(f"Declaring winner: {player.user.username}, pot before reset: {self.game_room.current_pot}")
+            player.user.coins += self.game_room.current_pot
+            self.game_room.current_pot = 0
+            await database_sync_to_async(player.save)()
+            await database_sync_to_async(self.game_room.save)()
+            
+            await self.send(text_data=json.dumps({
+                "message": f"{player.user.username} wins the round!",
+                "winner": player.user.id
+            }))
+            # Start a new round
+            await self.start_game()
+        else:
+            await self.send(text_data=json.dumps({
+                "message": "No active players left!",
+            }))
     
     async def compare_hands(self, player1, player2):
         hand1_value = await self.calculate_hand_value(player1.hand_cards)

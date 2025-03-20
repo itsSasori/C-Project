@@ -1,6 +1,7 @@
 # consumers.py
 import asyncio
 from datetime import datetime
+from asgiref.sync import sync_to_async  # Add this import
 import json
 import random
 import sys
@@ -234,6 +235,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 # Helper method to check and lock game start atomically
     @database_sync_to_async
     def _check_and_lock_game_start(self):
+            
             with transaction.atomic():
                 self.game_room.refresh_from_db()
                 if self.game_room.is_active or self.game_room.round_status in ['Betting', 'Distribution']:
@@ -243,6 +245,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return True
 
         # Helper method to reset is_active
+    
     @database_sync_to_async
     def _reset_is_active(self):
             self.game_room.is_active = False
@@ -270,8 +273,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.assign_card_to_player(player['id'], player_cards)
             logger.debug(f"Player {player['username']} got {player_cards}")
 
-
-
     async def assign_card_to_player(self, player_id, cards):
         # """Assigns a card to a player"""
         player = await self.get_player_by_id(player_id)
@@ -280,7 +281,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             player.hand_cards.extend(cards)  # Assign all three cards at once
             await self.save_player(player)
         # logger.debug(f"Card {card} assigned to player {player.user.username} to player {player_id}")
-    
     
     @database_sync_to_async
     def save_player(self, player):
@@ -298,13 +298,30 @@ class GameConsumer(AsyncWebsocketConsumer):
         except Player.DoesNotExist:
             logger.error(f"Player with user ID {player_id} does not exist!")
             return None
+
+    async def dispatch(self, message):
+        message_type = message.get('type')
+        if not message_type:
+            logger.error(f"Message missing 'type': {message}")
+            await self.send(text_data=json.dumps({'error': 'Invalid message format'}))
+            return
         
+        handler = getattr(self, message_type.replace('.', '_'), None)
+        if callable(handler):
+            logger.debug(f"Calling handler: {message_type}")
+            await handler(message)
+        else:
+            logger.error(f"No callable handler for type {message_type}")
+            await self.send(text_data=json.dumps({'error': f'No handler for {message_type}'}))
+
     async def receive(self, text_data):
         from .models import Player
         try:
             text_data_json = json.loads(text_data)
+            logger.debug(f"Received client message: {text_data_json}")
             action = text_data_json.get('action')
             player_id = text_data_json.get('player_id')
+            bet_amount = text_data_json.get('amount')
             player = await database_sync_to_async(Player.objects.get)(user__id=player_id, table=self.game_room)
             
             if action == 'place_bet':
@@ -314,13 +331,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             elif action == 'pack':
                 await self.handle_pack(player_id)
             elif action == 'sideshow':
-                await self.handle_sideshow(player_id, text_data_json.get('opponent_id'))
+                await self.handle_sideshow(player_id, text_data_json.get('opponent_id'),bet_amount)
+            elif action == 'sideshow_response':
+                await self.handle_sideshow_response(player_id, text_data_json.get('accept'))
             elif action == 'toggle_seen':
                 await self.toggle_seen(player)
-            
-
-            # Ensure this is called to send the game data to WebSocket after any action
-            await self.send_game_data()
+            else:
+                await self.send_game_data()
+  
         except IntegrityError as e:
             await self.send(text_data=json.dumps({'error': 'Database error: ' + str(e)}))
         except ObjectDoesNotExist as e:
@@ -422,7 +440,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.update_game_room_pot(amount)
             await self.save_current_bet(player, amount)
             active_players_count = await self.get_active_players_count()
-            await self.update_game_room_turn(active_players_count)
+            await self.next_turn(active_players_count)
             await self.update_game_state("betting")
             if active_players_count <= 1:
                 await self.declare_winner()
@@ -451,7 +469,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.update_game_room_pot(amount)
             await self.save_current_bet(player, amount)
             active_players_count = await self.get_active_players_count()
-            await self.update_game_room_turn(active_players_count)
+            await self.next_turn(active_players_count)
             await self.update_game_state("betting")
 
             # if active_players_count <= 1:
@@ -493,12 +511,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             player.save(update_fields=['current_bet'])
             player.refresh_from_db()  # Ensure latest value
             logger.debug(f"After update - Current bet for {player.user.username}: {player.current_bet}")
-
-    @database_sync_to_async
-    def update_game_room_turn(self, active_players_count):
-        self.game_room.current_turn = (self.game_room.current_turn + 1) % active_players_count
-        self.game_room.save(update_fields=['current_turn'])
-        logger.debug(f"Turn updated to {self.game_room.current_turn}")
 
 
     async def handle_pack(self, player_id):
@@ -550,46 +562,255 @@ class GameConsumer(AsyncWebsocketConsumer):
         players = await self.get_active_players()
         current_turn = self.game_room.current_turn
         
+        if active_players_count <= 0:
+            logger.error("No active players to advance turn")
+            await self.send(text_data=json.dumps({"error": "No active players left"}))
+            return
+        
         if current_turn >= active_players_count or current_turn < 0:
             current_turn = 0
         
-        # Always advance to the next active player
+        # Advance to the next non-packed player
+        next_index = (current_turn + 1) % active_players_count
         for i in range(active_players_count):
-            next_index = (current_turn + i) % active_players_count
-            if not players[next_index].is_packed:
-                self.game_room.current_turn = next_index
-                await database_sync_to_async(self.game_room.save)()
-                logger.debug(f"Turn advanced from {current_turn} to player at index {next_index}, ID: {players[next_index].user.id}")
+            candidate_index = (current_turn + i + 1) % active_players_count
+            if not players[candidate_index].is_packed:
+                next_index = candidate_index
                 break
-        else:
-            # Only declare winner if truly 1 active player remains
+        
+        self.game_room.current_turn = next_index
+        await database_sync_to_async(self.game_room.save)()
+        logger.debug(f"Turn advanced from {current_turn} to index {next_index}, player ID: {players[next_index].user.id}")
+        
+        # Check game end condition
+        if active_players_count <= 1:
             remaining_players = await self.get_active_players()
             if len(remaining_players) == 1:
-                logger.debug(f"One active player remains: {remaining_players[0].user.id}")
+                logger.debug(f"One player remains: {remaining_players[0].user.id}")
                 await self.declare_winner(remaining_players[0])
-            elif len(remaining_players) == 0:
-                logger.error("No active players found, ending game")
-                await self.send(text_data=json.dumps({"error": "No active players left"}))
-                return
-            else:
-                logger.error(f"Unexpected state: {len(remaining_players)} active players, but no turn found")
                 return
         
         await self.send_game_data()
 
-    async def handle_sideshow(self, player_id, opponent_id):
+    async def handle_sideshow(self, player_id, opponent_id,bet_amount):
+        await self.send_game_data()
+        from django.core.cache import cache
         player = await self.get_player_by_id(player_id)
         opponent = await self.get_player_by_id(opponent_id)
+        if not player or not opponent:
+            await self.send(text_data=json.dumps({'message': 'Player or opponent not found!'}))
+            return
+
+        # Prevent packed players from requesting sideshows
+        if player.is_packed:
+            await self.send(text_data=json.dumps({'message': 'Packed players cannot request a sideshow!'}))
+            return
         
-        winner = await self.compare_hands(player, opponent)
-        await self.declare_winner(winner)
+        await sync_to_async(self.game_room.refresh_from_db)()        
+        active_players = await self.get_active_players()
+        current_turn_index = self.game_room.current_turn
+        # if active_players[current_turn_index].user.id != player.user.id:
+        #     await self.send(text_data=json.dumps({'message': 'Not your turn!'}))
+        #     return
+
+        # Check if opponent is the previous active player
+        prev_index = (current_turn_index - 1) % len(active_players)
+        logger.debug(f"Active players: {[p.user.id for p in active_players]}")
+        logger.debug(f"Current turn index: {current_turn_index}")
+        logger.debug(f"Prev turn index: {prev_index}")
+        logger.debug(f"Prev turn index player: {active_players[prev_index].user.id}")
+        logger.debug(f"Opponent ID: {opponent.user.id}")
+        if active_players[prev_index].user.id != opponent.user.id:
+            await self.send(text_data=json.dumps({'message': 'Sideshow can only be requested with the previous player!'}))
+            return
+
+        # Check if player has bet enough
+        if bet_amount is not None:
+            if player.user.coins < bet_amount:
+                await self.send(text_data=json.dumps({'message': 'Insufficient coins for sideshow bet!'}))
+                return
+            await self.update_player_coins(player, -bet_amount)  # Deduct coins
+            await self.save_current_bet(player, opponent.current_bet)  # Set current_bet
+            await self.update_game_room_pot(bet_amount)  # Add to pot
+            logger.debug(f"Player {player.user.username} bet {bet_amount} to match {opponent.user.username}")
         
+        if player.current_bet < opponent.current_bet:
+            await self.send(text_data=json.dumps({'message': 'You must match the previous bet for a sideshow!'}))
+            return
+        
+        if self.game_room.round_status != 'betting':
+            await self.send(text_data=json.dumps({'message': 'Sideshow can only be requested during betting!'}))
+            return
+            # Add blind/seen check
+        if player.is_blind or opponent.is_blind:
+            await self.send(text_data=json.dumps({'message': 'Sideshow is only available between seen players!'}))
+            return
+        # Store sideshow request in cache
+        sideshow_key = f"sideshow_{self.game_room_id}_{player_id}_{opponent_id}"
+        cache.set(sideshow_key, {'player_id': str(player_id), 'opponent_id': str(opponent_id), 'accepted': None}, timeout=15)
+        logger.debug(f"Sideshow requested by {player.user.username} against {opponent.user.username}, key: {sideshow_key}")
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "sideshow_request",
+                "requester_id": player_id,
+                "opponent_id": opponent_id,
+                "sideshow_key": sideshow_key 
+            }
+        )
+
+        # Notify requester that request is pending
+        await self.send(text_data=json.dumps({'message': f'Sideshow request sent to {opponent.user.username}. Awaiting response...'}))
+
+        # Wait for response with a timeout (e.g., 10 seconds)
+        timeout = 15
+        for _ in range(timeout * 2):  # Check every 0.5 seconds
+            request = cache.get(sideshow_key)
+            if request and request['accepted'] is not None:
+                break
+            await asyncio.sleep(0.5)
+
+        request = cache.get(sideshow_key) or {'accepted': None}  # Fallback if cache expires
+        active_players_count = await self.get_active_players_count()
+        if request['accepted'] is None:
+            logger.debug(f"Sideshow request to {opponent.user.username} (timeout)")
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "sideshow_result",
+                    "message": f"Sideshow declined by {opponent.user.username} (timeout)",
+                    "packed_player": None
+                }
+            )
+
+        elif request['accepted']:
+            # Compare hands if accepted
+            winner = await self.compare_hands(player, opponent)
+            loser = opponent if winner == player else player
+            loser.is_packed = True
+            await database_sync_to_async(loser.save)()
+
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "sideshow_result",
+                    "message": f"Sideshow: {winner.user.username} wins against {loser.user.username}!",
+                    "winner_id": winner.user.id,
+                    "loser_id": loser.user.id,
+                    "packed_player": loser.user.id
+                }
+            )
+        else:
+            # Declined
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "sideshow_result",
+                    "message": f"Sideshow declined by {opponent.user.username}",
+                    "packed_player": None
+                }
+            )
+        cache.delete(sideshow_key)
+
+
+
+        # Always advance turn unless game ends
+        if active_players_count > 1:
+            await self.next_turn(active_players_count)
+        else:
+            await self.declare_winner()
         await self.send_game_data()
+
+    async def sideshow_request(self, event):
+        """Handle sideshow request sent to the opponent."""
+        logger.debug(f"Sideshow request event: {event}")
+        await self.send(text_data=json.dumps({
+            "type": "sideshow_request",
+            "requester_id": event["requester_id"],
+            "opponent_id": event["opponent_id"],
+            "sideshow_key": event["sideshow_key"]
+        }))
+
+    async def handle_sideshow_response(self, player_id, accept):
+        from django.core.cache import cache
+        logger.debug(f"Handling sideshow response: player_id={player_id}, accept={accept}")
+        opponent = await self.get_player_by_id(player_id)
+        if not opponent:
+            logger.error("Opponent not found")
+            await self.send(text_data=json.dumps({'message': 'Invalid sideshow response!'}))
+            return
+        
+        player_id = str(player_id)
+        # Find the sideshow request in cache
+        sideshow_key = None
+        for key in cache.keys(f"sideshow_{self.game_room_id}_*_{player_id}"):
+            sideshow_key = key
+            break
+
+        if not sideshow_key:
+            logger.error("No active sideshow request found in cache")
+            await self.send(text_data=json.dumps({'message': 'No active sideshow request!'}))
+            return
+
+        request = cache.get(sideshow_key)
+        logger.debug(f"Retrieved cache data for {sideshow_key}: {request}")
+        if not request:
+            logger.error(f"Cache returned None for key {sideshow_key}")            
+            await self.send(text_data=json.dumps({'message': 'Invalid sideshow response!'}))
+            return
+        
+        # Ensure opponent_id is treated as a string
+        cached_opponent_id = str(request.get('opponent_id', ''))
+        if cached_opponent_id != player_id:
+            logger.error(f"Player {player_id} is not the opponent for request: {request}")
+            await self.send(text_data=json.dumps({'message': 'Invalid sideshow response!'}))
+            return
+        
+        request['accepted'] = accept
+        cache.set(sideshow_key, request, timeout=15)  # Update cache with response
+        logger.debug(f"Sideshow response from {opponent.user.username}: {'Accepted' if accept else 'Declined'}")
     
-    # async def next_turn(self):
-    #     self.game_room.current_turn = (self.game_room.current_turn + 1) % await self.get_active_players_count()
-    #     await database_sync_to_async(self.game_room.save)()
-    #     await self.send_game_data()
+    async def sideshow_result(self, event):
+        """Broadcast sideshow result to all players."""
+        logger.debug(f"Sideshow request event: {event}")
+        await self.send(text_data=json.dumps(event))
+
+    
+    async def handle_show(self, player_id):
+        player = await self.get_player_by_id(player_id)
+        if not player:
+            return
+
+        active_players = await self.get_active_players()
+        if len(active_players) != 2:
+            await self.send(text_data=json.dumps({'message': 'Show can only be called with exactly 2 players!'}))
+            return
+
+        if active_players[self.game_room.current_turn].user.id != player.user.id:
+            await self.send(text_data=json.dumps({'message': 'Not your turn!'}))
+            return
+
+        opponent = active_players[0] if active_players[1].user.id == player.user.id else active_players[1]
+        winner = await self.compare_hands(player, opponent)
+
+        # Declare winner and update coins
+        winner.user.coins += self.game_room.current_pot
+        self.game_room.current_pot = 0
+        await database_sync_to_async(winner.user.save)()
+        await database_sync_to_async(self.game_room.save)()
+
+        # Save to GameHistory
+        await self.save_game_history(winner, 'show', self.game_room.current_pot)
+
+        await self.send(text_data=json.dumps({
+            'message': f'Show: {winner.user.username} wins the pot!',
+            'winner': winner.user.id,
+            'hand_winner': winner.hand_cards,
+            'hand_loser': opponent.hand_cards
+        }))
+
+        # Reset for new round
+        await self.start_game()
 
     async def toggle_seen(self, player):
         # Ensure self.game_room reflects the latest database state
@@ -615,32 +836,50 @@ class GameConsumer(AsyncWebsocketConsumer):
         logger.debug(f"After toggle_seen: pot = {self.game_room.current_pot}, round_status = '{current_status}'")
         await self.send_game_data()
 
-
-    async def declare_winner(self, player):
-        if player:
-            logger.debug(f"Declaring winner: {player.user.username}, pot before reset: {self.game_room.current_pot}")
-            player.user.coins += self.game_room.current_pot
-            self.game_room.current_pot = 0
-            await database_sync_to_async(player.save)()
-            await database_sync_to_async(self.game_room.save)()
-            
-            await self.send(text_data=json.dumps({
-                "message": f"{player.user.username} wins the round!",
-                "winner": player.user.id
-            }))
-            # Start a new round
-            await self.start_game()
-        else:
-            await self.send(text_data=json.dumps({
-                "message": "No active players left!",
-            }))
-    
     async def compare_hands(self, player1, player2):
         hand1_value = await self.calculate_hand_value(player1.hand_cards)
         hand2_value = await self.calculate_hand_value(player2.hand_cards)
-        return player1 if hand1_value > hand2_value else player2
-    
+        if hand1_value['rank'] == hand2_value['rank']:
+            if hand1_value['high_card'] == hand2_value['high_card']:
+                return player1  # Tiebreaker: First player wins (simplified)
+            return player1 if hand1_value['high_card'] > hand2_value['high_card'] else player2
+        return player1 if hand1_value['rank'] > hand2_value['rank'] else player2
+
     async def calculate_hand_value(self, hand_cards):
+        """Calculate hand value based on Teen Patti rules."""
         card_values = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
                        "J": 11, "Q": 12, "K": 13, "A": 14}
-        return sum(card_values[card[:-1]] for card in hand_cards)
+        ranks = [card[:-1] for card in hand_cards]
+        suits = [card[-1] for card in hand_cards]
+        values = sorted([card_values[rank] for rank in ranks], reverse=True)
+
+        # Check for Trail
+        if len(set(ranks)) == 1:
+            return {'rank': 6, 'high_card': values[0]}  # Trail
+
+        # Check for Pure Sequence
+        is_sequence = all(values[i] - 1 == values[i + 1] for i in range(len(values) - 1))
+        is_same_suit = len(set(suits)) == 1
+        if is_sequence and is_same_suit:
+            return {'rank': 5, 'high_card': values[0]}  # Pure Sequence
+        elif is_sequence:
+            return {'rank': 4, 'high_card': values[0]}  # Sequence
+
+        # Check for Color
+        if is_same_suit:
+            return {'rank': 3, 'high_card': values[0]}  # Color
+
+        # Check for Pair
+        if len(set(ranks)) == 2:
+            pairs = [r for r in set(ranks) if ranks.count(r) == 2]
+            if pairs:
+                pair_value = card_values[pairs[0]]
+                return {'rank': 2, 'high_card': pair_value}  # Pair
+
+        # High Card
+        return {'rank': 1, 'high_card': values[0]}
+
+    @database_sync_to_async
+    def save_game_history(self, player, action, amount):
+        from .models import GameHistory
+        GameHistory.objects.create(game=self.game_room,player=player,action=action,amount=amount)

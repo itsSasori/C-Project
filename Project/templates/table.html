@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Poker Table</title>
+    <title>Teen Patti Table</title>
     <link rel="stylesheet" type="text/css" href="{% static 'css/table.css' %}">
 </head>
 <body>
@@ -69,6 +69,7 @@
                 <button class="control-button purple" id="sideshow-btn" onclick="requestSideshow()">Sideshow</button>
                 <button class="control-button blue" id="bet-btn">Bet</button> 
                 <button class="control-button blue" id="double-bet-btn">Double Bet</button>
+                <button class="control-button green" id="show-btn" onclick="requestShow()">Show</button>
             </div>
         </div>
     </div>
@@ -85,7 +86,7 @@
     let round_status = "";  // Ensure this is globally accessible
     let cardsToggled = false;  // Tracks if "See Cards" has been clicked
     let localHandCards = [];   // Stores cards locally after toggle
-
+    let activeSideshowKey = null; // Track the current sideshow request
 const socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameRoomId}/`);
 
 socket.onopen = function(e) {
@@ -105,14 +106,33 @@ socket.onmessage = function(e) {
         if (data.players) {
             playersData = data.players;  // Update global players data
             updatePlayersList(data.players);
+            updateControls(data);
+            updateGameUI(data);
+            updateBetButton(data);  // Update the bet button text dynamically
+            updateDoubleBetButton(data);  // Update the double bet button text dynamically
+
         } else {
             console.error("No players data received!");
         }
-        updateControls(data);
-        updateGameUI(data);
-        updateBetButton(data);  // Update the bet button text dynamically
-        updateDoubleBetButton(data);  // Update the double bet button text dynamically
-
+    }else if(data.type == "sideshow_request"){
+        if (Number(data.opponent_id) === Number(currentUserId)) {
+            // Only show prompt if this is a new request
+            if (activeSideshowKey !== data.sideshow_key) {
+                activeSideshowKey = data.sideshow_key;
+                showSideshowPrompt(data.requester_id);
+            } else {
+                console.log("Ignoring duplicate sideshow request:", data.sideshow_key);
+            }
+        }
+    }else if(data.type == "sideshow_result"){
+        updateGameUI(data.message);
+        // Clear prompt and reset active key
+        const prompt = document.getElementById("sideshow-prompt");
+        if (prompt) prompt.remove();
+        activeSideshowKey = null;
+        document.getElementById("sideshow-btn").disabled = false;
+    }else if (data.message) {
+        updateGameUI(data.message);
     }
     if (data.type === "player_disconnected") {
         // Handle player leaving scenario
@@ -307,7 +327,6 @@ function updateGameUI(data) {
         currentBetElement.textContent = `♦ ${data.pot}`;
     }
 }
-
 function updateControls(data) {
     console.log("updateControls:", { 
         round_status: data.round_status, 
@@ -322,20 +341,35 @@ function updateControls(data) {
     const currentTurnIndex = data.current_turn;
     const currentPlayer = players.find(p => Number(p.id) === Number(currentUserId));
     const currentTurnPlayerId = activePlayers[currentTurnIndex];
-    // Show controls if it's the user's turn during betting, regardless of 'See Cards'
-    if (round_status === "betting" && activePlayers.length > 0 && currentTurnPlayerId && Number(currentTurnPlayerId) === Number(currentUserId) && !currentPlayer.is_packed) {        
+
+    // Determine the previous player dynamically based on current turn
+    const prevTurnIndex = (currentTurnIndex - 1 + activePlayers.length) % activePlayers.length;
+    const prevPlayerId = activePlayers[prevTurnIndex];
+    const prevPlayer = players.find(p => Number(p.id) === Number(prevPlayerId));
+
+    const isSideshowAllowed = activePlayers.length > 2 && !currentPlayer.is_blind && prevPlayer && !prevPlayer.is_blind;
+    console.log("Sideshow check:", { 
+        activePlayersLength: activePlayers.length, 
+        currentBlind: currentPlayer.is_blind, 
+        prevBlind: prevPlayer ? prevPlayer.is_blind : null, 
+        prevPlayerId: prevPlayerId 
+    });
+
+    if (round_status === "betting" && activePlayers.length > 0 && currentTurnPlayerId && 
+        Number(currentTurnPlayerId) === Number(currentUserId) && !currentPlayer.is_packed) {        
         console.log("Player at current turn index:", players[currentTurnIndex]);
         console.log("Player ID at current turn index:", players[currentTurnIndex].id);
         controls.style.display = "block";
         document.getElementById("pack-btn").disabled = false;
-        document.getElementById("sideshow-btn").disabled = false;
+        const sideshowBtn = document.getElementById("sideshow-btn");
+        sideshowBtn.style.display = isSideshowAllowed ? "inline-block" : "none";
         document.getElementById("bet-btn").disabled = false;
         document.getElementById("double-bet-btn").disabled = false;
-        console.log("Controls displayed for current user.");
+        document.getElementById("show-btn").disabled = activePlayers.length != 2;
+        console.log("Controls displayed for current user. Sideshow allowed:", isSideshowAllowed);
     } else {
         controls.style.display = "none";
-        console.log("Controls hidden:", { round_status, currentTurnIndex, isPacked: currentPlayer?.is_packed 
-        });        
+        console.log("Controls hidden:", { round_status, currentTurnIndex, isPacked: currentPlayer?.is_packed });
     }
 }
 
@@ -499,27 +533,87 @@ function placeDoubleBet(doubleAmount) {
      updateGameUI("You have packed and folded this round.");
  }
 
+ function showSideshowPrompt(requesterId) {     
+    const requester = playersData.find(p => Number(p.id) === Number(requesterId));     
+    const promptDiv = document.createElement("div");     
+    promptDiv.id = "sideshow-prompt";     
+    promptDiv.style.position = "fixed";     
+    promptDiv.style.top = "50%";     
+    promptDiv.style.left = "50%";     
+    promptDiv.style.transform = "translate(-50%, -50%)";     
+    promptDiv.style.background = "white";     
+    promptDiv.style.padding = "20px";     
+    promptDiv.style.border = "1px solid black";     
+    promptDiv.style.boxShadow = "0px 4px 10px rgba(0, 0, 0, 0.3)"; // Adding shadow for better visibility
+    
+    promptDiv.innerHTML = `         
+        <p id="sideshow-text" style="color: red; font-weight: bold; font-size: 18px;"> 
+            ${requester.username} requests a sideshow. Accept?
+        </p>         
+        <button id="accept-sideshow">Yes</button>         
+        <button id="decline-sideshow">No</button>     
+    `;     
 
+    document.body.appendChild(promptDiv);      
 
+    document.getElementById("accept-sideshow").onclick = () => respondToSideshow(true);     
+    document.getElementById("decline-sideshow").onclick = () => respondToSideshow(false); 
+}
+
+function respondToSideshow(accept) {
+    const data = {
+        action: "sideshow_response",
+        player_id: currentUserId,
+        accept: accept
+    };
+    socket.send(JSON.stringify(data));
+    console.log(`Sideshow response: ${accept ? "Accepted" : "Declined"}`);
+    document.getElementById("sideshow-prompt").remove();
+    activeSideshowKey = null; // Reset after response
+}
+let isRequestingSideshow = false;
  function requestSideshow() {
-     const data = {
-         action: 'sideshow',
-         player_id: currentUserId,
-         opponent_id: getOpponentId() //Player ID
-     };
-     socket.send(JSON.stringify(data));
- }
+    if (isRequestingSideshow) {
+        console.log("Sideshow request is already in progress. Please wait.");
+        return;
+    }
+    isRequestingSideshow = true;
+    const activePlayers = playersData.filter(p => !p.is_packed);
+    if (activePlayers.length <= 2) {
+        console.log("Cannot request sideshow with 2 or fewer players");
+        return;
+    }
+    const sideshowBtn = document.getElementById("sideshow-btn");
+    if (sideshowBtn.disabled) {
+        console.log("Sideshow button is disabled, request ignored");
+        return;
+    }
+    const currentPlayerIndex = activePlayers.findIndex(p => Number(p.id) === Number(currentUserId));
+    const prevPlayerIndex = (currentPlayerIndex - 1 + activePlayers.length) % activePlayers.length;
+    const opponent = activePlayers[prevPlayerIndex];
+    const opponentId = opponent.id;
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    const betAmount = opponent.current_bet; // Amount to match
 
-    function getOpponentId() {
-    // Implement logic to get the opponent ID for sideshow
-    // This is just a placeholder implementation
-        const players = document.querySelectorAll('.player');
-        for (let player of players) {
-            if (player.id !== `player-${currentUserId}`) {
-                return player.id.replace('player-', '');
-            }
-        }
-        return null;
+    const data = {
+        action: 'sideshow',
+        player_id: currentUserId,
+        opponent_id: opponentId,
+        amount: betAmount
+    };
+    socket.send(JSON.stringify(data));
+    console.log(`Sideshow requested against Player ${opponentId} with bet ${betAmount}`);
+    document.getElementById("sideshow-btn").disabled = true;
+    setTimeout(() => isRequestingSideshow = false, 1000);
+}
+
+function requestShow() {
+    const data = {
+        action: 'show',
+        player_id: currentUserId
+    };
+    socket.send(JSON.stringify(data));
+    console.log("Show requested");
 }
  document.getElementById("pack-btn").addEventListener("click", packGame);
  document.getElementById("sideshow-btn").addEventListener("click", requestSideshow); 

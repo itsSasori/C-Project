@@ -3,7 +3,7 @@
 import os
 import sys
 
-
+os.environ["PYTHONIOENCODING"] = "utf-8"
 def main():
     """Run administrative tasks."""
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Project.settings')

@@ -32,18 +32,24 @@
                             <div class="player-name">{{ player.username }}</div>
                             <div class="player-coins"> {{ player.coins }}</div> 
                             <div class="player-current-bet" id="player-current-bet-{{ player.id }}">♦ {{ player.current_bet }}</div> <!-- Add this line -->
-
                         </div>
                         <!-- Player Cards -->
-                        <div class="player-cards" id="player-cards-{{ player.id }}">
-                            {% for card in player.cards %}
-                            <div class="card">{{ card }}</div> 
-                            {% endfor %}
+                        <div class="player-cards" id="player-cards-{{ player.id }}" style="display: none;">
+                            {% if player.id == user.id and not player.is_blind %}
+                                {% for card in player.cards %}
+                                    <span class="card">{{ card }}</span>
+                                {% endfor %}
+                            {% else %}
+                                <span class="card">Hidden</span>
+                            {% endif %}
                         </div>
                              <!-- Show "See Cards" Button only for the player viewing the page -->    
-                          {% if player.id == user.id %}
-                          <button class="see-cards-btn" id="see-cards-btn-{{ player.id }}" onclick="toggleCards({{ player.id }})">See Cards</button>
-                        {% endif %}
+                        {% if player.id == user.id %}
+                        <button class="see-cards" id="see-cards-btn-{{ player.id }}" onclick="toggleSeen({{ player.id }})"
+                            {% if not player.is_blind %}style="display: none;"{% endif %}>
+                            See Cards
+                        </button>
+                    {% endif %}
                     </div>
                     {% endfor %}
                 </div>
@@ -53,13 +59,9 @@
                     <div class="table-limit">Table Limit</div>
                     <div class="table-pot">120,000</div>
                     <div class="table-current-bet">♦ 12,800</div>
-                    <div class="progress-bar"><div class="progress"></div></div>
-                    {% comment %} <div id="game-status"></div>  <!-- Add this for status messages --> {% endcomment %}
-                    {% comment %} <div class="cards" id="player-cards">
-                        <div class="card">A♥</div>
-                        <div class="card">K♠</div>
-                        <div class="card">Q♠</div>
-                    </div> {% endcomment %}
+                    <div class="progress-bar"><div class="progress"></div>
+                </div>
+                    
                 </div>
             </div>
             
@@ -71,6 +73,7 @@
                 <button class="control-button blue" id="double-bet-btn">Double Bet</button>
                 <button class="control-button green" id="show-btn" onclick="requestShow()">Show</button>
             </div>
+            <div id="show-result" style="display: none;"></div>
         </div>
     </div>
 </body>
@@ -102,6 +105,42 @@ socket.onmessage = function(e) {
         currentTurn = data.current_turn;
         round_status = data.round_status;
         console.log("Round Status:", round_status);
+        if (data.round_status === "distribution") {
+                console.log("New round detected. Resetting card visibility.");
+                cardsToggled = false;
+                localHandCards = [];
+
+                // Clear cards for ALL players and reset their UI
+                playersData.forEach(player => {
+                    const cardsContainer = document.querySelector(`#player-cards-${player.id}`);
+                    if (cardsContainer) {
+                        cardsContainer.innerHTML = "";
+                        cardsContainer.style.display = "none";
+                    }
+
+                    // Reset or show See Cards button for current user
+                    const playerElement = document.querySelector(`#player-${player.id}`);
+                    let seeButton = document.querySelector(`#see-cards-btn-${player.id}`);
+                    if (player.id == currentUserId) {
+                        if (!seeButton) {
+                            seeButton = document.createElement("button");
+                            seeButton.className = "see-cards-btn";
+                            seeButton.id = `see-cards-btn-${player.id}`;
+                            seeButton.textContent = "See Cards";
+                            seeButton.onclick = () => toggleCards(player.id);
+                            if (playerElement) playerElement.appendChild(seeButton);
+                        } else {
+                            seeButton.style.display = "block";
+                        }
+                    } else {
+                        // Hide other players' see cards button if any (precaution)
+                        if (seeButton) {
+                            seeButton.style.display = "none";
+                        }
+                    }
+                });
+            }
+
 
         if (data.players) {
             playersData = data.players;  // Update global players data
@@ -131,9 +170,13 @@ socket.onmessage = function(e) {
         if (prompt) prompt.remove();
         activeSideshowKey = null;
         document.getElementById("sideshow-btn").disabled = false;
+    }else if (data.type == "show_result"){
+        winnerprompt(data)
     }else if (data.message) {
         updateGameUI(data.message);
     }
+    
+
     if (data.type === "player_disconnected") {
         // Handle player leaving scenario
         console.log(`Player ${data.player_id} has disconnected.`);
@@ -157,12 +200,16 @@ function updatePlayersList(players) {
     players.forEach(player => {
         console.log(`Processing player: ${player.id}`);
         let playerElement = document.querySelector(`#player-${player.id}`);
+
+        const isCurrentUser = player.id == currentUserId;
+        const shouldShowCards = isCurrentUser && !player.is_blind;
+        const cardsToggled = !player.is_blind;
+
         if (playerElement) {
-            // Update existing player
+            // === Update existing player ===
             console.log(`Updating existing player ${player.id}`);
             let imgElement = playerElement.querySelector('.player-img');
             if (!imgElement) {
-                console.log(`Player ${player.id} missing .player-img, recreating`);
                 imgElement = document.createElement('img');
                 imgElement.className = 'player-img';
                 imgElement.alt = "Image";
@@ -175,7 +222,7 @@ function updatePlayersList(players) {
                 playerInfo.querySelector('.player-name').textContent = player.username;
                 playerInfo.querySelector('.player-coins').textContent = `♦ ${player.coins}`;
                 playerInfo.querySelector('.player-current-bet').textContent = `♦ ${player.current_bet}`;
-                // Add packed status
+
                 let packStatus = playerInfo.querySelector('.player-pack-status');
                 if (!packStatus) {
                     packStatus = document.createElement('div');
@@ -183,54 +230,67 @@ function updatePlayersList(players) {
                     playerInfo.appendChild(packStatus);
                 }
                 packStatus.textContent = player.is_packed ? "Packed" : "";
-
-            } else {
-                console.log(`Player ${player.id} missing .player-info, skipping update`);
             }
 
             playerElement.className = `player ${player.position}`;
+            playerElement.setAttribute('data-player-id', player.id);
 
-            const cardsContainer = playerElement.querySelector(`#player-cards-${player.id}`);
-            if (cardsContainer) {
-                const previousDisplay = cardsContainer.style.display;                
-                cardsContainer.style.display = (player.id == currentUserId && cardsToggled) ? "block" : "none";
-                console.log(`Player ${player.id} cards visibility - Previous: ${previousDisplay}, Now: ${cardsContainer.style.display}, cardsToggled: ${cardsToggled}`);
+            const cardsEl = playerElement.querySelector(`#player-cards-${player.id}`);
+            const seeCardsBtn = playerElement.querySelector(`#see-cards-btn-${player.id}`);
 
-                if (player.id == currentUserId) {
-                    const cardsToDisplay = (cardsToggled && player.cards.length === 0) ? localHandCards : player.cards;
-                    console.log(`Player ${player.id} - Server cards: ${JSON.stringify(player.cards)}, Using cards: ${JSON.stringify(cardsToDisplay)}`);
-                    updatePlayerCards(player.id, cardsToDisplay);
+            if (cardsEl) {
+                const previousDisplay = cardsEl.style.display;
+
+                if (shouldShowCards) {
+                    cardsEl.style.display = 'block';
+                    const cardsToDisplay = (cardsToggled && player.cards.length === 0 && localHandCards.length > 0)
+                        ? localHandCards
+                        : player.cards;
+                    cardsEl.innerHTML = cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('');
+                    if (seeCardsBtn) seeCardsBtn.style.display = 'none';
+                    console.log(`Player ${player.id} card visibility: Shown`);
                 } else {
-                    updatePlayerCards(player.id, []);
+                    cardsEl.style.display = 'none';
+                    cardsEl.innerHTML = '<span class="card">Hidden</span>'; // Optional placeholder
+                    if (seeCardsBtn && round_status === "betting") seeCardsBtn.style.display = 'block';
+                    console.log(`Player ${player.id} card visibility: Hidden`);
                 }
             }
 
-            if (player.id == currentUserId) {
-                let seeButton = playerElement.querySelector(`#see-cards-btn-${player.id}`);
-                if (seeButton) {
-                    seeButton.style.display = (!cardsToggled && round_status === "betting") ? "block" : "none";                
-                } else if (player.is_blind && round_status === "betting") {
-                    seeButton = document.createElement('button');
-                    seeButton.className = "see-cards-btn";
-                    seeButton.id = `see-cards-btn-${player.id}`;
-                    seeButton.textContent = "See Cards";
-                    seeButton.onclick = () => toggleCards(player.id);
-                    playerElement.appendChild(seeButton);
+            if (isCurrentUser) {
+                if (!seeCardsBtn && player.is_blind && round_status === "betting") {
+                    const newBtn = document.createElement('button');
+                    newBtn.className = "see-cards-btn";
+                    newBtn.id = `see-cards-btn-${player.id}`;
+                    newBtn.textContent = "See Cards";
+                    newBtn.onclick = () => toggleCards(player.id);
+                    playerElement.appendChild(newBtn);
                 }
             }
+
             existingPlayerIds.delete(player.id.toString());
         } else {
-            // Add new player
+            // === Add new player ===
             console.log(`Adding new player: ${player.id}`);
             const playerDiv = document.createElement('div');
             playerDiv.classList.add('player', player.position);
             playerDiv.id = `player-${player.id}`;
+            playerDiv.setAttribute('data-player-id', player.id);
+
             let buttonHTML = "";
-            if (player.id == currentUserId && !cardsToggled && round_status === "betting") {
+            if (isCurrentUser && !cardsToggled && round_status === "betting") {
                 buttonHTML = `<button class="see-cards-btn" id="see-cards-btn-${player.id}" onclick="toggleCards(${player.id})">See Cards</button>`;
             }
-            // Adjust card visibility for new players
-            const cardDisplay = (player.id == currentUserId && cardsToggled) ? 'block' : 'none';
+
+            const cardDisplay = shouldShowCards ? 'block' : 'none';
+            const cardsToDisplay = (cardsToggled && player.cards.length === 0 && isCurrentUser)
+                ? localHandCards
+                : (shouldShowCards ? player.cards : []);
+
+            const cardsHTML = shouldShowCards
+                ? cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('')
+                : `<span class="card">Hidden</span>`;
+
             playerDiv.innerHTML = `
                 <img src="${player.avatar || '/media/avatars/default.png'}" alt="Image" class="player-img">
                 <div class="player-info">
@@ -239,23 +299,19 @@ function updatePlayersList(players) {
                     <div class="player-current-bet" id="player-current-bet-${player.id}">♦ ${player.current_bet}</div>
                     <div class="player-pack-status">${player.is_packed ? "Packed" : ""}</div>
                 </div>
-                <div class="player-cards" id="player-cards-${player.id}" style="display:${cardDisplay};"></div>
+                <div class="player-cards" id="player-cards-${player.id}" style="display:${cardDisplay};">
+                    ${cardsHTML}
+                </div>
                 ${buttonHTML}
             `;
             playerList.appendChild(playerDiv);
-            // Update cards based on current user
-            if (player.id == currentUserId) {
-                const cardsToDisplay = (cardsToggled && player.cards.length === 0) ? localHandCards : player.cards;
-                console.log(`New Player ${player.id} - Server cards: ${JSON.stringify(player.cards)}, Using cards: ${JSON.stringify(cardsToDisplay)}`);
-                updatePlayerCards(player.id, player.cards);
-            } else {
-                updatePlayerCards(player.id, []);
-            }
+
+            updatePlayerCards(player.id, shouldShowCards ? cardsToDisplay : []);
             console.log(`New player ${player.id} appended to DOM`);
         }
     });
 
-    // Remove stale players
+    // === Remove stale players ===
     existingPlayerIds.forEach(id => {
         const staleElement = document.querySelector(`#player-${id}`);
         if (staleElement) {
@@ -265,47 +321,71 @@ function updatePlayersList(players) {
     });
 }
 
+
 // Function to toggle the visibility of the player's cards
 function toggleCards(playerId) {
     const cardsContainer = document.querySelector(`#player-cards-${playerId}`);
     const seeButton = document.querySelector(`#see-cards-btn-${playerId}`);
-    if (cardsContainer.style.display === "none") {
-        cardsContainer.style.display = "block";
-        cardsToggled = true;
-        const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
-        if (currentPlayer && currentPlayer.cards.length > 0) {
-            localHandCards = [...currentPlayer.cards];  // Store cards locally
+
+    cardsContainer.style.display = "block";
+    cardsToggled = true;
+
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    if (currentPlayer && currentPlayer.cards.length > 0) {
+        localHandCards = [...currentPlayer.cards];  // Store cards locally
+    }
+
+    if (seeButton) seeButton.style.display = "none";
+
+    const data = {
+        action: 'toggle_seen',
+        player_id: currentUserId
+    };
+    socket.send(JSON.stringify(data));
+}
+
+
+function updatePlayerCards(playerId, cards) {
+    const playerCardsContainer = document.querySelector(`#player-cards-${playerId}`);
+    if (!playerCardsContainer) return;
+
+    const isCurrentUser = playerId == currentUserId;
+
+    // Handle current user's card visibility
+    if (isCurrentUser) {
+    if (cardsToggled) {
+        if (cards.length === 0 && localHandCards.length > 0) {
+            cards = localHandCards;
+        } else if (cards.length > 0) {
+            localHandCards = [...cards];
         }
-        console.log(`Toggled cards for Player ${playerId} - cardsToggled: ${cardsToggled}, localHandCards: ${JSON.stringify(localHandCards)}`);
-        if (seeButton) {
-            seeButton.style.display = "none";
-        }
-        const data = {
-            action: 'toggle_seen',
-            player_id: currentUserId
-        };
-        socket.send(JSON.stringify(data));
+    } else {
+        localHandCards = [];
+        cards = []; // ⬅ force no card reuse
     }
 }
 
-function updatePlayerCards(playerId, cards) {
-    console.log(`Updating cards for Player ${playerId}:`, cards);
-    const playerCardsContainer = document.querySelector(`#player-cards-${playerId}`);
-    if (!playerCardsContainer) return;
-    const previousContent = playerCardsContainer.innerHTML;  // Declared before if
-    if (!cardsToggled || cards.length > 0) {
-        playerCardsContainer.innerHTML = "";
-        cards.forEach(card => {
-            const cardElement = document.createElement('div');
-            cardElement.classList.add('card');
-            cardElement.textContent = card;
-            playerCardsContainer.appendChild(cardElement);
-        });
-        console.log(`Player ${playerId} cards updated - Previous: ${previousContent.length > 0 ? 'cards present' : 'empty'}, Now: ${playerCardsContainer.innerHTML.length > 0 ? 'cards present' : 'empty'}`);
-    } else {
-        console.log(`Player ${playerId} cards preserved - Previous: ${previousContent.length > 0 ? 'cards present' : 'empty'}, No update due to cardsToggled`);
-    }
+
+    //  Always clear DOM (even if cards are empty)
+    playerCardsContainer.innerHTML = "";
+
+    cards.forEach(card => {
+        const cardElement = document.createElement('div');
+        cardElement.classList.add('card');
+        cardElement.textContent = card;
+        playerCardsContainer.appendChild(cardElement);
+    });
+
+    // Only show if player toggled and has cards
+    const shouldShow = isCurrentUser && cardsToggled && cards.length > 0;
+    playerCardsContainer.style.display = shouldShow ? "block" : "none";
+
+    console.log(`Player ${playerId} card visibility: ${shouldShow ? "Shown" : "Hidden"}`);
 }
+
+
+
+
 
 function updateGameUI(data) {
     console.log("Updating game UI with data:", data);
@@ -335,6 +415,7 @@ function updateControls(data) {
         playerAtTurn: data.active_players ? data.active_players[data.current_turn] : null 
     });
     const controls = document.getElementById("controls");
+    const seeCardsBtn = document.querySelector(`#see-cards-btn-${currentUserId}`);
     const players = data.players;
     const activePlayers = data.active_players || [];
     const round_status = data.round_status;
@@ -348,6 +429,7 @@ function updateControls(data) {
     const prevPlayer = players.find(p => Number(p.id) === Number(prevPlayerId));
 
     const isSideshowAllowed = activePlayers.length > 2 && !currentPlayer.is_blind && prevPlayer && !prevPlayer.is_blind;
+    const showAllowed = activePlayers.length === 2;
     console.log("Sideshow check:", { 
         activePlayersLength: activePlayers.length, 
         currentBlind: currentPlayer.is_blind, 
@@ -361,14 +443,21 @@ function updateControls(data) {
         console.log("Player ID at current turn index:", players[currentTurnIndex].id);
         controls.style.display = "block";
         document.getElementById("pack-btn").disabled = false;
+        const showBtn = document.getElementById("show-btn");
         const sideshowBtn = document.getElementById("sideshow-btn");
         sideshowBtn.style.display = isSideshowAllowed ? "inline-block" : "none";
+        showBtn.style.display = showAllowed ? "inline-block" : "none";
         document.getElementById("bet-btn").disabled = false;
         document.getElementById("double-bet-btn").disabled = false;
-        document.getElementById("show-btn").disabled = activePlayers.length != 2;
+        if (seeCardsBtn && currentPlayer.is_blind) {
+            seeCardsBtn.style.display = "block";
+        }
         console.log("Controls displayed for current user. Sideshow allowed:", isSideshowAllowed);
     } else {
         controls.style.display = "none";
+        if (seeCardsBtn) {
+                seeCardsBtn.style.display = "none";
+        }
         console.log("Controls hidden:", { round_status, currentTurnIndex, isPacked: currentPlayer?.is_packed });
     }
 }
@@ -614,6 +703,15 @@ function requestShow() {
     };
     socket.send(JSON.stringify(data));
     console.log("Show requested");
+
+}
+function winnerprompt(data) {
+    const showResultDiv = document.getElementById("show-result");
+    showResultDiv.style.display = "block";
+    showResultDiv.innerHTML = `<p>${data.message}</p>`;
+    setTimeout(() => {
+        showResultDiv.style.display = "none";
+    }, 5000); // Hide after 5 seconds
 }
  document.getElementById("pack-btn").addEventListener("click", packGame);
  document.getElementById("sideshow-btn").addEventListener("click", requestSideshow); 

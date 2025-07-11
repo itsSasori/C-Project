@@ -38,6 +38,9 @@ class Player(models.Model):
     is_ready = models.BooleanField(default=False)
     is_turn = models.BooleanField(default=False)
 
+    class Meta:
+        unique_together = ('user', 'table')
+
     def __str__(self):
         return f"{self.user.username}-Game-Table-{self.table.id}"
     

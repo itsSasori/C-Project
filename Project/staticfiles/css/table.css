@@ -1,5 +1,5 @@
 body {
-    background-color: black;
+    background-color: grey;
     color: white;
     font-family: Arial, sans-serif;
     display: flex;
@@ -8,6 +8,24 @@ body {
     height: 100vh;
     margin: 0;
 }
+.player-cards {
+    display: none;  /* Cards are hidden by default */
+}
+
+.see-cards-btn {
+    margin-top: 10px;
+    background-color: #6a5acd;
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.see-cards-btn:hover {
+    background-color: #4e3c92;
+}
+
 .container {
     width: 100%;
     max-width: 800px;
@@ -52,27 +70,35 @@ body {
     display: flex;
     align-items: center;
     position: absolute;
-}
-.top-left {
-    top: 0;
-    left: 0;
+    top: 10%;  /* Default, this will be overridden in JS */
+    left: 10%; /* Default, this will be overridden in JS */
     transform: translate(-50%, -50%);
 }
-.top-right {
-    top: 0;
-    right: 0;
+
+.player.top-left {
+    top: 10%;
+    left: 5%;
+    transform: translate(-50%, -50%);
+}
+
+.player.top-right {
+    top: 10%;
+    right: 5%;
     transform: translate(50%, -50%);
 }
-.bottom-left {
-    bottom: 0;
-    left: 0;
+
+.player.bottom-left {
+    bottom: 10%;
+    left: 5%;
     transform: translate(-50%, 50%);
 }
-.bottom-right {
-    bottom: 0;
-    right: 0;
+
+.player.bottom-right {
+    bottom: 10%;
+    right: 5%;
     transform: translate(50%, 50%);
 }
+
 .player-img {
     width: 40px;
     height: 40px;
@@ -83,7 +109,12 @@ body {
     font-size: 14px;
     margin-bottom: 5px;
 }
-.player-score {
+.player-info {
+    color: white;
+    font-size: 14px;
+}
+
+.player-coins {
     color: red;
     font-size: 12px;
 }
@@ -151,4 +182,34 @@ body {
 }
 .control-button.purple {
     background: purple;
+}
+
+
+
+/* Positioning the Exit Button on the left corner */
+.exit-game-btn {
+    position: fixed;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 10px 20px;
+    background-color: #ff4c4c;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.exit-game-btn:hover {
+    background-color: #ff2a2a;
+}
+
+.control-button.blue {
+    background-color: blue;
+}
+.player-pack-status {
+    color: red;
+    font-size: 12px;
+    font-weight: bold;
 }

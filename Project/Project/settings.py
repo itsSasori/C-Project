@@ -187,6 +187,7 @@ LOGGING = {
             "class": "logging.FileHandler",
             "filename": os.path.join(settings.BASE_DIR, "gamedevelpment_logs.log"),  # Save logs to a file
             "formatter": "verbose",
+            "encoding": "utf-8",  # Ensure UTF-8 encoding for file output
         },
         "console": {
             "level": "DEBUG",  # Display all debug and above level logs in console

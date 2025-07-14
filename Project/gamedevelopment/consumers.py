@@ -51,8 +51,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         
             # Set new player as spectator if game is in progress
         if self.game_room.round_status in ['betting', 'distribution']:
-            self.player.is_packed = True
-            await database_sync_to_async(self.player.save)(update_fields=['is_packed'])
+            self.player.is_spectator = True  # Use is_spectator 
+            await database_sync_to_async(self.player.save)(update_fields=['is_spectator'])
             await self.send(text_data=json.dumps({
                     "type": "spectator_notification",
                     "message": "Game in progress. You are a spectator until the next round starts."
@@ -198,6 +198,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 "cards": player.hand_cards,
                 "is_blind": player.is_blind,
                 "is_packed": player.is_packed,
+                "is_spectator": player.is_spectator,
                 "current_bet": player.current_bet  # Ensure current_bet is included
             
             }
@@ -350,6 +351,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             bet_amount = text_data_json.get('amount')
             player = await database_sync_to_async(Player.objects.get)(user__id=player_id, table=self.game_room)
             
+            # Prevent spectators from performing actions
+            if player.is_spectator:
+                await self.send(text_data=json.dumps({'error': 'Spectators cannot perform actions!'}))
+                return
+            # Prevent packed players from performing actions
+            if player.is_packed and action in ['place_bet', 'place_double_bet', 'sideshow', 'show']:
+                await self.send(text_data=json.dumps({'error': 'Packed players cannot perform this action!'}))
+                return
+            
             if action == 'place_bet':
                 await self.handle_bet(player_id, text_data_json.get('amount'))
             elif action == 'place_double_bet':
@@ -413,13 +423,13 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def get_active_players(self):
         from .models import Player
         return await database_sync_to_async(lambda: list(Player.objects.filter(
-            table=self.game_room, is_packed=False
+            table=self.game_room, is_packed=False,is_spectator=False
         ).select_related('user')))()
 
     @database_sync_to_async
     def get_active_players_count(self):
-        """Gets the count of players who haven't packed."""
-        count=self.game_room.players.exclude(is_packed=True).count()
+        """Gets the count of players who haven't packed and aren't spectators."""
+        count = self.game_room.players.filter(is_packed=False, is_spectator=False).count()
         logger.debug(f"Active players count: {count}")
         return count
 
@@ -440,13 +450,19 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.debug("Player not found")
             await self.send(text_data=json.dumps({'message': 'Player not found!'}))
             return
+        # Check if player is packed
+        if player.is_packed:
+            logger.debug(f"Player {player.user.username} is packed and cannot place a bet")
+            await self.send(text_data=json.dumps({'message': 'Packed players cannot place bets!'}))
+            return
         
         active_players = await database_sync_to_async(list)(self.game_room.players.filter(is_packed=False))
         current_turn_index = self.game_room.current_turn
-        # if active_players[current_turn_index].id != player.id:
-        #     logger.debug("Not player's turn")
-        #     return
-
+        if not active_players:
+            logger.error("No active players available")
+            await self.send(text_data=json.dumps({'message': 'No active players available!'}))
+            return
+        
         # Get previous player's bet for Teen Patti rules
         prev_index = (current_turn_index - 1) % len(active_players)
         prev_player = active_players[prev_index]
@@ -485,8 +501,19 @@ class GameConsumer(AsyncWebsocketConsumer):
         if not player:
             return
 
+        # Check if player is packed
+        if player.is_packed:
+            logger.debug(f"Player {player.user.username} is packed and cannot place a double bet")
+            await self.send(text_data=json.dumps({'message': 'Packed players cannot place bets!'}))
+            return
+
+        # Ensure it's the player's turn
         active_players = await database_sync_to_async(list)(self.game_room.players.filter(is_packed=False))
         current_turn_index = self.game_room.current_turn
+        if not active_players:
+            logger.error("No active players available")
+            await self.send(text_data=json.dumps({'message': 'No active players available!'}))
+            return
 
         prev_index = (current_turn_index - 1) % len(active_players)
         prev_player = active_players[prev_index]
@@ -597,41 +624,62 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
         
         logger.debug(f"After packing: pot = {self.game_room.current_pot}")
-        
-
+    
     async def next_turn(self, active_players_count):
-        players = await self.get_active_players()
-        current_turn = self.game_room.current_turn
-        
+        logger.debug(f"Entering next_turn with active_players_count: {active_players_count}")
         if active_players_count <= 0:
             logger.error("No active players to advance turn")
             await self.send(text_data=json.dumps({"error": "No active players left"}))
             return
-        
-        if current_turn >= active_players_count or current_turn < 0:
-            current_turn = 0
-        
-        # Advance to the next non-packed player
-        next_index = (current_turn + 1) % active_players_count
-        for i in range(active_players_count):
-            candidate_index = (current_turn + i + 1) % active_players_count
-            if not players[candidate_index].is_packed:
-                next_index = candidate_index
-                break
-        
-        self.game_room.current_turn = next_index
-        await database_sync_to_async(self.game_room.save)()
-        logger.debug(f"Turn advanced from {current_turn} to index {next_index}, player ID: {players[next_index].user.id}, is_packed: {players[next_index].is_packed}")        
-        # Check game end condition
-        if active_players_count <= 1:
-            remaining_players = await self.get_active_players()
-            if len(remaining_players) == 1:
-                logger.debug(f"One player remains: {remaining_players[0].user.id}")
-                await self.declare_winner(remaining_players[0])
+        try:
+            players = await self.get_active_players()
+            logger.debug(f"Active players retrieved: {[p.user.username for p in players]}")
+            if not players:
+                logger.error("Empty active players list")
+                await self.send(text_data=json.dumps({"error": "No active players available"}))
                 return
+            current_turn = self.game_room.current_turn
+            logger.debug(f"Current turn index: {current_turn}, players length: {len(players)}")
+            if current_turn < 0 or current_turn >= len(players):
+                logger.warning(f"Invalid current_turn: {current_turn}, resetting to 0")
+                current_turn = 0
+            next_index = (current_turn + 1) % active_players_count
+            logger.debug(f"Initial next_index calculated: {next_index}")
+            for i in range(active_players_count):
+                candidate_index = (current_turn + i + 1) % active_players_count
+                logger.debug(f"Checking candidate_index: {candidate_index}")
+                if candidate_index >= len(players):
+                    logger.error(f"Invalid candidate_index: {candidate_index}, players length: {len(players)}")
+                    await self.send(text_data=json.dumps({"error": "list index out of range"}))
+                    return
+                candidate = players[candidate_index]
+                logger.debug(f"Candidate player: {candidate.user.username}, is_packed: {candidate.is_packed}, is_spectator: {candidate.is_spectator}")
+                if not candidate.is_packed and not candidate.is_spectator:
+                    next_index = candidate_index
+                    logger.debug(f"Valid next player found at index: {next_index}, username: {candidate.user.username}")
+                    break
+            else:
+                logger.error("No valid next player found")
+                await self.send(text_data=json.dumps({"error": "No valid players to advance turn"}))
+                return
+            self.game_room.current_turn = next_index
+            logger.debug(f"Updating game_room.current_turn to: {next_index}")
+            await database_sync_to_async(self.game_room.save)(update_fields=['current_turn'])
+            next_player = players[next_index]
+            logger.debug(f"Turn advanced from index {current_turn} to {next_index}, player ID: {next_player.user.id}, username: {next_player.user.username}, is_packed: {next_player.is_packed}")
+            if active_players_count == 1:
+                remaining_players = await self.get_active_players()
+                logger.debug(f"Checking remaining players: {[p.user.username for p in remaining_players]}")
+                if len(remaining_players) == 1:
+                    logger.debug(f"One player remains: {remaining_players[0].user.username}")
+                    await self.declare_winner(remaining_players[0])
+                    return
+            await self.send_game_data()
+            logger.debug("Game data sent after turn advancement")
+        except Exception as e:
+            logger.error(f"Error in next_turn: {str(e)}")
+            await self.send(text_data=json.dumps({"error": f"Error advancing turn: {str(e)}"}))
         
-        await self.send_game_data()
-
     async def handle_sideshow(self, player_id, opponent_id,bet_amount):
         await self.send_game_data()
         from django.core.cache import cache
@@ -649,9 +697,6 @@ class GameConsumer(AsyncWebsocketConsumer):
         await sync_to_async(self.game_room.refresh_from_db)()        
         active_players = await self.get_active_players()
         current_turn_index = self.game_room.current_turn
-        # if active_players[current_turn_index].user.id != player.user.id:
-        #     await self.send(text_data=json.dumps({'message': 'Not your turn!'}))
-        #     return
 
         # Check if opponent is the previous active player
         prev_index = (current_turn_index - 1) % len(active_players)
@@ -751,14 +796,20 @@ class GameConsumer(AsyncWebsocketConsumer):
                 }
             )
         cache.delete(sideshow_key)
-
-
-
         # Always advance turn unless game ends
         if active_players_count > 1:
+            logger.debug("Advancing turn after sideshow")
             await self.next_turn(active_players_count)
+            # Log the player who now has control
+            active_players = await self.get_active_players()
+            if active_players:
+                next_player = active_players[self.game_room.current_turn]
+                logger.debug(f"After sideshow, control passed to player: {next_player.user.username} (ID: {next_player.user.id})")
+            else:
+                logger.debug("No active players available after sideshow")
         else:
             await self.declare_winner()
+            logger.debug("Game ended after sideshow, no player has control")
         await self.send_game_data()
 
     async def sideshow_request(self, event):
@@ -931,6 +982,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 for player in players:
                     player.is_packed = False
                     player.is_blind = True
+                    player.is_spectator = False
                     player.current_bet = 0
                     player.hand_cards = []
                     player.save()

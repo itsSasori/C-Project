@@ -106,54 +106,53 @@ socket.onmessage = function(e) {
         round_status = data.round_status;
         console.log("Round Status:", round_status);
         if (data.round_status === "distribution") {
-                console.log("New round detected. Resetting card visibility.");
-                cardsToggled = false;
-                localHandCards = [];
+            console.log("New round detected. Resetting card visibility.");
+            cardsToggled = false;
+            localHandCards = [];
 
-                // Clear cards for ALL players and reset their UI
-                playersData.forEach(player => {
-                    const cardsContainer = document.querySelector(`#player-cards-${player.id}`);
-                    if (cardsContainer) {
-                        cardsContainer.innerHTML = "";
-                        cardsContainer.style.display = "none";
-                    }
+            // Clear cards for ALL players and reset their UI
+            playersData.forEach(player => {
+                const cardsContainer = document.querySelector(`#player-cards-${player.id}`);
+                if (cardsContainer) {
+                    cardsContainer.innerHTML = "";
+                    cardsContainer.style.display = "none";
+                }
 
-                    // Reset or show See Cards button for current user
-                    const playerElement = document.querySelector(`#player-${player.id}`);
-                    let seeButton = document.querySelector(`#see-cards-btn-${player.id}`);
-                    if (player.id == currentUserId) {
-                        if (!seeButton) {
-                            seeButton = document.createElement("button");
-                            seeButton.className = "see-cards-btn";
-                            seeButton.id = `see-cards-btn-${player.id}`;
-                            seeButton.textContent = "See Cards";
-                            seeButton.onclick = () => toggleCards(player.id);
-                            if (playerElement) playerElement.appendChild(seeButton);
-                        } else {
-                            seeButton.style.display = "block";
-                        }
+                // Reset or show See Cards button for current user
+                const playerElement = document.querySelector(`#player-${player.id}`);
+                let seeButton = document.querySelector(`#see-cards-btn-${player.id}`);
+                if (player.id == currentUserId && !player.is_spectator) {
+                    if (!seeButton) {
+                        seeButton = document.createElement("button");
+                        seeButton.className = "see-cards-btn";
+                        seeButton.id = `see-cards-btn-${player.id}`;
+                        seeButton.textContent = "See Cards";
+                        seeButton.onclick = () => toggleCards(player.id);
+                        if (playerElement) playerElement.appendChild(seeButton);
                     } else {
-                        // Hide other players' see cards button if any (precaution)
-                        if (seeButton) {
-                            seeButton.style.display = "none";
-                        }
+                        seeButton.style.display = "block";
                     }
-                });
-            }
-
+                } else {
+                    // Hide other players' see cards button if any (precaution)
+                    if (seeButton) {
+                        seeButton.style.display = "none";
+                    }
+                }
+            });
+        }
 
         if (data.players) {
-            playersData = data.players;  // Update global players data
+            playersData = data.players; // Update global players data
             updatePlayersList(data.players);
             updateControls(data);
             updateGameUI(data);
-            updateBetButton(data);  // Update the bet button text dynamically
-            updateDoubleBetButton(data);  // Update the double bet button text dynamically
-
-        } else {
-            console.error("No players data received!");
+            updateBetButton(data); // Update the bet button text dynamically
+            updateDoubleBetButton(data); // Update the double bet button text dynamically
         }
-    }else if(data.type == "sideshow_request"){
+    } else if (data.type === "spectator_notification") {
+        // Display spectator notification
+        updateGameUI(data.message);
+    } else if (data.type === "sideshow_request") {
         if (Number(data.opponent_id) === Number(currentUserId)) {
             // Only show prompt if this is a new request
             if (activeSideshowKey !== data.sideshow_key) {
@@ -163,24 +162,24 @@ socket.onmessage = function(e) {
                 console.log("Ignoring duplicate sideshow request:", data.sideshow_key);
             }
         }
-    }else if(data.type == "sideshow_result"){
+    } else if (data.type === "sideshow_result") {
         updateGameUI(data.message);
         // Clear prompt and reset active key
         const prompt = document.getElementById("sideshow-prompt");
         if (prompt) prompt.remove();
         activeSideshowKey = null;
-        document.getElementById("sideshow-btn").disabled = false;
-    }else if (data.type == "show_result"){
-        winnerprompt(data)
-    }else if (data.message) {
-        updateGameUI(data.message);
-    }
-    
-
-    if (data.type === "player_disconnected") {
+        const sideshowBtn = document.getElementById("sideshow-btn");
+        console.log(`Sideshow button status after sideshow_result: disabled=${sideshowBtn.disabled}, display=${sideshowBtn.style.display}`);
+    } else if (data.type === "show_result") {
+        winnerprompt(data);
+    } else if (data.type === "player_disconnected") {
         // Handle player leaving scenario
         console.log(`Player ${data.player_id} has disconnected.`);
         removePlayerFromUI(data.player_id);
+    } else if (data.message) {
+        updateGameUI(data.message);
+    } else {
+        console.error("No players data received or unrecognized data type!");
     }
 };
 
@@ -202,7 +201,7 @@ function updatePlayersList(players) {
         let playerElement = document.querySelector(`#player-${player.id}`);
 
         const isCurrentUser = player.id == currentUserId;
-        const shouldShowCards = isCurrentUser && !player.is_blind;
+        const shouldShowCards = isCurrentUser && !player.is_blind && !player.is_spectator;
         const cardsToggled = !player.is_blind;
 
         if (playerElement) {
@@ -229,7 +228,7 @@ function updatePlayersList(players) {
                     packStatus.className = 'player-pack-status';
                     playerInfo.appendChild(packStatus);
                 }
-                packStatus.textContent = player.is_packed ? "Packed" : "";
+                packStatus.textContent = player.is_spectator ? "Spectator" : (player.is_packed ? "Packed" : "");
             }
 
             playerElement.className = `player ${player.position}`;
@@ -252,12 +251,12 @@ function updatePlayersList(players) {
                 } else {
                     cardsEl.style.display = 'none';
                     cardsEl.innerHTML = '<span class="card">Hidden</span>'; // Optional placeholder
-                    if (seeCardsBtn && round_status === "betting") seeCardsBtn.style.display = 'block';
+                    if (seeCardsBtn && !player.is_spectator && round_status === "betting") seeCardsBtn.style.display = 'block';
                     console.log(`Player ${player.id} card visibility: Hidden`);
                 }
             }
 
-            if (isCurrentUser) {
+            if (isCurrentUser && !player.is_spectator) {
                 if (!seeCardsBtn && player.is_blind && round_status === "betting") {
                     const newBtn = document.createElement('button');
                     newBtn.className = "see-cards-btn";
@@ -266,8 +265,9 @@ function updatePlayersList(players) {
                     newBtn.onclick = () => toggleCards(player.id);
                     playerElement.appendChild(newBtn);
                 }
+            }else if (seeCardsBtn) {
+                seeCardsBtn.style.display = 'none'; // Hide for spectators
             }
-
             existingPlayerIds.delete(player.id.toString());
         } else {
             // === Add new player ===
@@ -278,7 +278,7 @@ function updatePlayersList(players) {
             playerDiv.setAttribute('data-player-id', player.id);
 
             let buttonHTML = "";
-            if (isCurrentUser && !cardsToggled && round_status === "betting") {
+            if (isCurrentUser && !player.is_spectator && !cardsToggled && round_status === "betting") {
                 buttonHTML = `<button class="see-cards-btn" id="see-cards-btn-${player.id}" onclick="toggleCards(${player.id})">See Cards</button>`;
             }
 
@@ -297,7 +297,7 @@ function updatePlayersList(players) {
                     <div class="player-name">${player.username}</div>
                     <div class="player-coins">♦ ${player.coins}</div>
                     <div class="player-current-bet" id="player-current-bet-${player.id}">♦ ${player.current_bet}</div>
-                    <div class="player-pack-status">${player.is_packed ? "Packed" : ""}</div>
+                    <div class="player-pack-status">${player.is_spectator ? "Spectator" : (player.is_packed ? "Packed" : "")}</div>
                 </div>
                 <div class="player-cards" id="player-cards-${player.id}" style="display:${cardDisplay};">
                     ${cardsHTML}
@@ -350,6 +350,13 @@ function updatePlayerCards(playerId, cards) {
     if (!playerCardsContainer) return;
 
     const isCurrentUser = playerId == currentUserId;
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(playerId));
+
+    if (currentPlayer.is_spectator) {
+        playerCardsContainer.innerHTML = "";
+        playerCardsContainer.style.display = "none";
+        return;
+    }
 
     // Handle current user's card visibility
     if (isCurrentUser) {
@@ -391,9 +398,24 @@ function updateGameUI(data) {
     console.log("Updating game UI with data:", data);
     if (typeof data === "string") {
         const statusDiv = document.getElementById("game-status");
-        if (statusDiv) {
-            statusDiv.textContent = data;
+        if (!statusDiv) {
+            const newStatusDiv = document.createElement("div");
+            newStatusDiv.id = "game-status";
+            newStatusDiv.style.position = "fixed";
+            newStatusDiv.style.top = "10px";
+            newStatusDiv.style.left = "50%";
+            newStatusDiv.style.transform = "translateX(-50%)";
+            newStatusDiv.style.background = "rgba(0, 0, 0, 0.8)";
+            newStatusDiv.style.color = "white";
+            newStatusDiv.style.padding = "10px";
+            newStatusDiv.style.borderRadius = "5px";
+            document.body.appendChild(newStatusDiv);
         }
+        document.getElementById("game-status").textContent = data;
+        setTimeout(() => {
+            const statusDiv = document.getElementById("game-status");
+            if (statusDiv) statusDiv.remove();
+        }, 5000); // Hide after 5 seconds
         return;
     }
     console.log("table-pot", data.table_pot);
@@ -422,7 +444,13 @@ function updateControls(data) {
     const currentTurnIndex = data.current_turn;
     const currentPlayer = players.find(p => Number(p.id) === Number(currentUserId));
     const currentTurnPlayerId = activePlayers[currentTurnIndex];
-
+    // Check if the current player is a spectator
+    if (currentPlayer && currentPlayer.is_spectator) {
+        controls.style.display = "none";
+        if (seeCardsBtn) seeCardsBtn.style.display = "none";
+        console.log("Controls hidden: Current player is a spectator");
+        return;
+    }
     // Determine the previous player dynamically based on current turn
     const prevTurnIndex = (currentTurnIndex - 1 + activePlayers.length) % activePlayers.length;
     const prevPlayerId = activePlayers[prevTurnIndex];
@@ -436,7 +464,7 @@ function updateControls(data) {
         prevBlind: prevPlayer ? prevPlayer.is_blind : null, 
         prevPlayerId: prevPlayerId 
     });
-
+    const sideshowBtn = document.getElementById("sideshow-btn");
     if (round_status === "betting" && activePlayers.length > 0 && currentTurnPlayerId && 
         Number(currentTurnPlayerId) === Number(currentUserId) && !currentPlayer.is_packed) {        
         console.log("Player at current turn index:", players[currentTurnIndex]);
@@ -460,6 +488,7 @@ function updateControls(data) {
         }
         console.log("Controls hidden:", { round_status, currentTurnIndex, isPacked: currentPlayer?.is_packed });
     }
+    console.log(`Sideshow button status in updateControls: disabled=${sideshowBtn.disabled}, display=${sideshowBtn.style.display}`);
 }
 
 
@@ -692,17 +721,20 @@ let isRequestingSideshow = false;
     };
     socket.send(JSON.stringify(data));
     console.log(`Sideshow requested against Player ${opponentId} with bet ${betAmount}`);
-    document.getElementById("sideshow-btn").disabled = true;
+    console.log(`Sideshow button status after request: disabled=${sideshowBtn.disabled}`);
+    controls.style.display = "none";
     setTimeout(() => isRequestingSideshow = false, 1000);
 }
 
 function requestShow() {
+    const controls = document.getElementById("controls");
     const data = {
         action: 'show',
         player_id: currentUserId
     };
     socket.send(JSON.stringify(data));
     console.log("Show requested");
+    controls.style.display = "none";
 
 }
 function winnerprompt(data) {

@@ -37,6 +37,7 @@ class Player(models.Model):
     hand_cards = models.JSONField(default=list)  # Stores card values
     is_ready = models.BooleanField(default=False)
     is_turn = models.BooleanField(default=False)
+    is_spectator = models.BooleanField(default=False)  # New field for spectator status
 
     class Meta:
         unique_together = ('user', 'table')

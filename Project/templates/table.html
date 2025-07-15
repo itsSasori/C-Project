@@ -429,32 +429,59 @@ function updateGameUI(data) {
         currentBetElement.textContent = `♦ ${data.pot}`;
     }
 }
+
 function updateControls(data) {
     console.log("updateControls:", { 
         round_status: data.round_status, 
         currentTurn: data.current_turn, 
         currentUserId, 
-        playerAtTurn: data.active_players ? data.active_players[data.current_turn] : null 
+        playerAtTurn: data.players && data.current_turn < data.players.length ? data.players[data.current_turn] : null 
     });
+
+    // Handle error messages from backend
+    if (data.error) {
+        console.error("Backend error:", data.error);
+        alert("Game error: " + data.error);
+        return;
+    }
+
     const controls = document.getElementById("controls");
     const seeCardsBtn = document.querySelector(`#see-cards-btn-${currentUserId}`);
-    const players = data.players;
+    const players = data.players || [];
     const activePlayers = data.active_players || [];
     const round_status = data.round_status;
     const currentTurnIndex = data.current_turn;
+
+    // Find current player
     const currentPlayer = players.find(p => Number(p.id) === Number(currentUserId));
-    const currentTurnPlayerId = activePlayers[currentTurnIndex];
-    // Check if the current player is a spectator
-    if (currentPlayer && currentPlayer.is_spectator) {
+
+    // Check if current player exists and is a spectator
+    if (!currentPlayer || currentPlayer.is_spectator) {
         controls.style.display = "none";
         if (seeCardsBtn) seeCardsBtn.style.display = "none";
-        console.log("Controls hidden: Current player is a spectator");
+        console.log("Controls hidden: Current player is a spectator or not found");
         return;
     }
-    // Determine the previous player dynamically based on current turn
-    const prevTurnIndex = (currentTurnIndex - 1 + activePlayers.length) % activePlayers.length;
-    const prevPlayerId = activePlayers[prevTurnIndex];
-    const prevPlayer = players.find(p => Number(p.id) === Number(prevPlayerId));
+
+    // Map current_turn (index into players) to active player ID
+    let currentTurnPlayerId = null;
+    if (players[currentTurnIndex] && activePlayers.includes(Number(players[currentTurnIndex].id))) {
+        currentTurnPlayerId = Number(players[currentTurnIndex].id);
+    }
+
+    // Find previous active player for sideshow logic
+    let prevPlayer = null;
+    let prevTurnIndex = (currentTurnIndex - 1 + players.length) % players.length;
+    let searched = 0;
+    while (searched < players.length) {
+        const candidate = players[prevTurnIndex];
+        if (candidate && activePlayers.includes(Number(candidate.id)) && !candidate.is_spectator && !candidate.is_packed) {
+            prevPlayer = candidate;
+            break;
+        }
+        prevTurnIndex = (prevTurnIndex - 1 + players.length) % players.length;
+        searched++;
+    }
 
     const isSideshowAllowed = activePlayers.length > 2 && !currentPlayer.is_blind && prevPlayer && !prevPlayer.is_blind;
     const showAllowed = activePlayers.length === 2;
@@ -462,17 +489,19 @@ function updateControls(data) {
         activePlayersLength: activePlayers.length, 
         currentBlind: currentPlayer.is_blind, 
         prevBlind: prevPlayer ? prevPlayer.is_blind : null, 
-        prevPlayerId: prevPlayerId 
+        prevPlayerId: prevPlayer ? prevPlayer.id : null 
     });
+
     const sideshowBtn = document.getElementById("sideshow-btn");
+    const showBtn = document.getElementById("show-btn");
+
+    // Show controls if it's the current player's turn and they're active
     if (round_status === "betting" && activePlayers.length > 0 && currentTurnPlayerId && 
         Number(currentTurnPlayerId) === Number(currentUserId) && !currentPlayer.is_packed) {        
-        console.log("Player at current turn index:", players[currentTurnIndex]);
-        console.log("Player ID at current turn index:", players[currentTurnIndex].id);
+        console.log("Player at current turn:", players[currentTurnIndex]);
+        console.log("Player ID at current turn:", currentTurnPlayerId);
         controls.style.display = "block";
         document.getElementById("pack-btn").disabled = false;
-        const showBtn = document.getElementById("show-btn");
-        const sideshowBtn = document.getElementById("sideshow-btn");
         sideshowBtn.style.display = isSideshowAllowed ? "inline-block" : "none";
         showBtn.style.display = showAllowed ? "inline-block" : "none";
         document.getElementById("bet-btn").disabled = false;
@@ -484,10 +513,11 @@ function updateControls(data) {
     } else {
         controls.style.display = "none";
         if (seeCardsBtn) {
-                seeCardsBtn.style.display = "none";
+            seeCardsBtn.style.display = "none";
         }
         console.log("Controls hidden:", { round_status, currentTurnIndex, isPacked: currentPlayer?.is_packed });
     }
+
     console.log(`Sideshow button status in updateControls: disabled=${sideshowBtn.disabled}, display=${sideshowBtn.style.display}`);
 }
 
@@ -502,26 +532,39 @@ function removePlayerFromUI(playerId) {
     }
 }
 
-{% comment %} const exitButton = document.getElementById("exit-game-btn");
-
-exitButton.addEventListener("click", function() {
-    // Redirect to the interface page
-    window.location.href = "/gamedevelopment/interface/";
-
-}); {% endcomment %}
 document.addEventListener("DOMContentLoaded", () => {
-    // Initial call without data; buttons will reset until first update
-    updateBetButton({ players: playersData, active_players: [] });
-    updateDoubleBetButton({ players: playersData, active_players: [] });
+    // Initialize buttons as disabled until first WebSocket update
+    updateBetButton({ players: [], active_players: [], current_turn: 0 });
+    updateDoubleBetButton({ players: [], active_players: [], current_turn: 0 });
 });
 
 let isBetting = false;
 
-function updateBetButton(data) {  // Add data parameter to access active_players
+function updateBetButton(data) {
+    console.log("updateBetButton:", { 
+        round_status: data.round_status, 
+        current_turn: data.current_turn, 
+        currentUserId 
+    });
+
+    // Handle error messages from backend
+    if (data.error) {
+        console.error("Backend error:", data.error);
+        alert("Game error: " + data.error);
+        return;
+    }
+
     const betButton = document.getElementById("bet-btn");
-    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    const players = data.players || [];
     const activePlayers = data.active_players || [];
-    const currentTurnPlayerId = activePlayers[currentTurn];
+    const currentTurnIndex = data.current_turn;
+    const currentPlayer = players.find(p => Number(p.id) === Number(currentUserId));
+
+    // Map current_turn to active player ID
+    let currentTurnPlayerId = null;
+    if (players[currentTurnIndex] && activePlayers.includes(Number(players[currentTurnIndex].id))) {
+        currentTurnPlayerId = Number(players[currentTurnIndex].id);
+    }
 
     if (
         currentPlayer && 
@@ -529,15 +572,23 @@ function updateBetButton(data) {  // Add data parameter to access active_players
         Number(currentTurnPlayerId) === Number(currentUserId)
     ) {
         // Find the previous active player
-        const currentTurnIndex = activePlayers.indexOf(Number(currentUserId));
-        const prevPlayerIndex = (currentTurnIndex - 1 + activePlayers.length) % activePlayers.length;
-        const prevPlayerId = activePlayers[prevPlayerIndex];
-        const prevPlayer = playersData.find(p => Number(p.id) === Number(prevPlayerId));
+        let prevPlayer = null;
+        let prevTurnIndex = (currentTurnIndex - 1 + players.length) % players.length;
+        let searched = 0;
+        while (searched < players.length) {
+            const candidate = players[prevTurnIndex];
+            if (candidate && activePlayers.includes(Number(candidate.id)) && !candidate.is_spectator && !candidate.is_packed) {
+                prevPlayer = candidate;
+                break;
+            }
+            prevTurnIndex = (prevTurnIndex - 1 + players.length) % players.length;
+            searched++;
+        }
 
         const minBet = currentPlayer.is_blind 
-            ? (prevPlayer.is_blind ? prevPlayer.current_bet : prevPlayer.current_bet / 2)
-            : (prevPlayer.is_blind ? prevPlayer.current_bet * 2 : prevPlayer.current_bet);
-        console.log(`Bet button - prevPlayer.current_bet: ${prevPlayer.current_bet}, minBet: ${minBet}`);
+            ? (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet : (prevPlayer ? prevPlayer.current_bet / 2 : 1))
+            : (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet * 2 : (prevPlayer ? prevPlayer.current_bet : 1));
+        console.log(`Bet button - prevPlayer.current_bet: ${prevPlayer?.current_bet}, minBet: ${minBet}`);
         betButton.textContent = `Bet ${minBet}`;
         betButton.onclick = () => placeBet(minBet);
     } else {
@@ -577,28 +628,57 @@ function placeBet(amount) {
 
 
    // Add this function to update the Double Bet button text
-   function updateDoubleBetButton(data) {  // Add data parameter
+function updateDoubleBetButton(data) {
+    console.log("updateDoubleBetButton:", { 
+        round_status: data.round_status, 
+        current_turn: data.current_turn, 
+        currentUserId 
+    });
+
+    // Handle error messages from backend
+    if (data.error) {
+        console.error("Backend error:", data.error);
+        alert("Game error: " + data.error);
+        return;
+    }
+
     const doubleBetButton = document.getElementById("double-bet-btn");
-    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    const players = data.players || [];
     const activePlayers = data.active_players || [];
-    const currentTurnPlayerId = activePlayers[currentTurn];
+    const currentTurnIndex = data.current_turn;
+    const currentPlayer = players.find(p => Number(p.id) === Number(currentUserId));
+
+    // Map current_turn to active player ID
+    let currentTurnPlayerId = null;
+    if (players[currentTurnIndex] && activePlayers.includes(Number(players[currentTurnIndex].id))) {
+        currentTurnPlayerId = Number(players[currentTurnIndex].id);
+    }
 
     if (
         currentPlayer && 
         activePlayers.length > 0 && 
         Number(currentTurnPlayerId) === Number(currentUserId)
     ) {
-        const currentTurnIndex = activePlayers.indexOf(Number(currentUserId));
-        const prevPlayerIndex = (currentTurnIndex - 1 + activePlayers.length) % activePlayers.length;
-        const prevPlayerId = activePlayers[prevPlayerIndex];
-        const prevPlayer = playersData.find(p => Number(p.id) === Number(prevPlayerId));
+        // Find the previous active player
+        let prevPlayer = null;
+        let prevTurnIndex = (currentTurnIndex - 1 + players.length) % players.length;
+        let searched = 0;
+        while (searched < players.length) {
+            const candidate = players[prevTurnIndex];
+            if (candidate && activePlayers.includes(Number(candidate.id)) && !candidate.is_spectator && !candidate.is_packed) {
+                prevPlayer = candidate;
+                break;
+            }
+            prevTurnIndex = (prevTurnIndex - 1 + players.length) % players.length;
+            searched++;
+        }
 
         const minBet = currentPlayer.is_blind 
-            ? (prevPlayer.is_blind ? prevPlayer.current_bet : prevPlayer.current_bet / 2)
-            : prevPlayer.current_bet * 2;
+            ? (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet : (prevPlayer ? prevPlayer.current_bet / 2 : 1))
+            : (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet * 2 : (prevPlayer ? prevPlayer.current_bet : 1));
         const doubleAmount = currentPlayer.is_blind 
-            ? (prevPlayer.is_blind ? prevPlayer.current_bet * 2 : prevPlayer.current_bet)
-            : (prevPlayer.is_blind ? prevPlayer.current_bet * 4 : prevPlayer.current_bet * 2);
+            ? (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet * 2 : (prevPlayer ? prevPlayer.current_bet : 2))
+            : (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet * 4 : (prevPlayer ? prevPlayer.current_bet * 2 : 2));
         console.log(`Updated Double Bet button to: ${doubleAmount}`);
         doubleBetButton.textContent = `Double Bet ${doubleAmount}`;
         doubleBetButton.onclick = () => placeDoubleBet(doubleAmount);

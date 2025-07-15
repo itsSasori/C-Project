@@ -139,6 +139,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         players = await self.get_players()  # Fetch players
         active_players = await self.get_active_players()  # Only active players
         active_player_ids = [p.user.id for p in active_players]  # IDs of active players
+
         # Refresh game room to ensure latest state
         await database_sync_to_async(self.game_room.refresh_from_db)()
         # Debugging output
@@ -569,117 +570,110 @@ class GameConsumer(AsyncWebsocketConsumer):
             player.refresh_from_db()  # Ensure latest value
             logger.debug(f"After update - Current bet for {player.user.username}: {player.current_bet}")
 
-
     async def handle_pack(self, player_id):
+        logger.debug(f"Handling pack for player ID: {player_id}")
+        
+        # Fetch player and verify
         player = await self.get_player_by_id(player_id)
         if not player:
+            logger.error(f"Player {player_id} not found")
+            await self.send(text_data=json.dumps({'error': 'Player not found!'}))
             return
         
         if player.is_packed:
             logger.debug(f"Player {player.user.username} is already packed, ignoring action")
+            await self.send(text_data=json.dumps({'message': 'You are already packed!'}))
             return
-        # Refresh game room state to ensure we have the latest pot value
-        await database_sync_to_async(self.game_room.refresh_from_db)()
-        current_pot = self.game_room.current_pot
-        logger.debug(f"Before packing: pot = {current_pot}, player = {player.user.username}")
-        player.is_packed = True
-        await database_sync_to_async(player.save)()
-        await self.send_game_data()
-        
-        remaining_players = await self.get_active_players()
-        initial_player_count = await self.get_active_players_count() + 1  # Include the packing player
-        active_players_count = len(remaining_players)
-        logger.debug(f"Active players after pack: {active_players_count}, initial count: {initial_player_count}")
 
-        if initial_player_count == 2 and active_players_count == 1:
-            logger.debug(f"Only one player left with initial two players, declaring winner: {remaining_players[0].user.username}")
-            await self.declare_winner(remaining_players[0])
-        else:
-            logger.debug(f"Multiple players remain, advancing turn")
-            if active_players_count <= 1:
-                if remaining_players:
-                    logger.debug(f"Only one player left, declaring winner: {remaining_players[0].user.username}")
-                    await self.declare_winner(remaining_players[0])
+        # Refresh game room state to ensure latest pot and turn
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        current_pot = self.game_room.current_pot if self.game_room.current_pot is not None else 0
+        logger.debug(f"Before packing: pot = {current_pot}, player = {player.user.username}")
+
+        # Mark player as packed
+        player.is_packed = True
+        await database_sync_to_async(player.save)(update_fields=['is_packed'])
+        logger.debug(f"Player {player.user.username} marked as packed")
+
+        # Get active players count
+        active_players_count = await self.get_active_players_count()
+        logger.debug(f"Active players after pack: {active_players_count}")
+
+        # Check if game should end
+        if active_players_count <= 1:
+            remaining_players = await self.get_active_players()
+            if remaining_players:
+                logger.debug(f"Only one player left, declaring winner: {remaining_players[0].user.username}")
+                await self.declare_winner(remaining_players[0])
             else:
-                # If the current turn is the packed player, advance immediately
-                active_players = await self.get_active_players()
-                if self.game_room.current_turn >= active_players_count:
-                    self.game_room.current_turn = 0
-                    logger.debug(f"Reset turn to 0 due to packed player")
-                else:
-                    current_turn_player = active_players[self.game_room.current_turn]
-                    if current_turn_player.user.id == player.user.id:
-                        logger.debug(f"Packed player was current turn, advancing turn")
-                        await self.next_turn(active_players_count)
-                    else:
-                        logger.debug(f"Advancing turn normally")
-                        await self.next_turn(active_players_count)
-                # Preserve game state
-                await self.update_game_state("betting")
-                # Check pot integrity
-                await database_sync_to_async(self.game_room.refresh_from_db)()
-                if self.game_room.current_pot != current_pot:
-                    logger.warning(f"Pot changed from {current_pot} to {self.game_room.current_pot} during pack, restoring")
-                    self.game_room.current_pot = current_pot
-                    await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
-        
-        logger.debug(f"After packing: pot = {self.game_room.current_pot}")
-    
+                logger.warning("No active players remain, ending game without winner")
+                await self.update_game_state("waiting")
+                await self.send(text_data=json.dumps({'message': 'No active players remain!'}))
+            return
+
+        # Advance turn using next_turn
+        await self.next_turn(active_players_count)
+        await self.update_game_state("betting")
+
+        # Verify pot integrity
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        if self.game_room.current_pot != current_pot:
+            logger.warning(f"Pot changed from {current_pot} to {self.game_room.current_pot} during pack, restoring")
+            self.game_room.current_pot = current_pot
+            await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+
+        logger.debug(f"After packing: pot = {self.game_room.current_pot}, current_turn = {self.game_room.current_turn}")
+        await self.send_game_data()
+
     async def next_turn(self, active_players_count):
         logger.debug(f"Entering next_turn with active_players_count: {active_players_count}")
-        if active_players_count <= 0:
-            logger.error("No active players to advance turn")
-            await self.send(text_data=json.dumps({"error": "No active players left"}))
+
+        if active_players_count <= 1:
+            logger.debug("Only one or no active player remains, checking for winner")
+            remaining_players = await self.get_active_players()
+            if remaining_players:
+                await self.declare_winner(remaining_players[0])
             return
+
         try:
-            players = await self.get_active_players()
-            logger.debug(f"Active players retrieved: {[p.user.username for p in players]}")
-            if not players:
-                logger.error("Empty active players list")
-                await self.send(text_data=json.dumps({"error": "No active players available"}))
-                return
-            current_turn = self.game_room.current_turn
-            logger.debug(f"Current turn index: {current_turn}, players length: {len(players)}")
-            if current_turn < 0 or current_turn >= len(players):
-                logger.warning(f"Invalid current_turn: {current_turn}, resetting to 0")
-                current_turn = 0
-            next_index = (current_turn + 1) % active_players_count
-            logger.debug(f"Initial next_index calculated: {next_index}")
-            for i in range(active_players_count):
-                candidate_index = (current_turn + i + 1) % active_players_count
-                logger.debug(f"Checking candidate_index: {candidate_index}")
-                if candidate_index >= len(players):
-                    logger.error(f"Invalid candidate_index: {candidate_index}, players length: {len(players)}")
-                    await self.send(text_data=json.dumps({"error": "list index out of range"}))
-                    return
-                candidate = players[candidate_index]
-                logger.debug(f"Candidate player: {candidate.user.username}, is_packed: {candidate.is_packed}, is_spectator: {candidate.is_spectator}")
+            await database_sync_to_async(self.game_room.refresh_from_db)()
+
+            all_players = await database_sync_to_async(lambda: list(
+                self.game_room.players.select_related('user').order_by('id').all()
+            ))()
+
+            # Get current player list for turn rotation
+            current_index = self.game_room.current_turn
+            total_players = len(all_players)
+            logger.debug(f"Current turn index: {current_index}, total players: {total_players}")
+
+            next_index = (current_index + 1) % total_players
+            searched = 0
+
+            # Find next valid player
+            while searched < total_players:
+                candidate = all_players[next_index]
                 if not candidate.is_packed and not candidate.is_spectator:
-                    next_index = candidate_index
-                    logger.debug(f"Valid next player found at index: {next_index}, username: {candidate.user.username}")
-                    break
-            else:
-                logger.error("No valid next player found")
-                await self.send(text_data=json.dumps({"error": "No valid players to advance turn"}))
-                return
-            self.game_room.current_turn = next_index
-            logger.debug(f"Updating game_room.current_turn to: {next_index}")
-            await database_sync_to_async(self.game_room.save)(update_fields=['current_turn'])
-            next_player = players[next_index]
-            logger.debug(f"Turn advanced from index {current_turn} to {next_index}, player ID: {next_player.user.id}, username: {next_player.user.username}, is_packed: {next_player.is_packed}")
-            if active_players_count == 1:
-                remaining_players = await self.get_active_players()
-                logger.debug(f"Checking remaining players: {[p.user.username for p in remaining_players]}")
-                if len(remaining_players) == 1:
-                    logger.debug(f"One player remains: {remaining_players[0].user.username}")
-                    await self.declare_winner(remaining_players[0])
+                    self.game_room.current_turn = next_index
+                    await database_sync_to_async(self.game_room.save)(update_fields=["current_turn"])
+                    logger.debug(f"Next turn set to index {next_index} - player: {candidate.user.username}")
+                    await self.send_game_data()
                     return
-            await self.send_game_data()
-            logger.debug("Game data sent after turn advancement")
+                next_index = (next_index + 1) % total_players
+                searched += 1
+
+            logger.warning("No valid player found for the next turn. Triggering winner declaration.")
+            active_players = await self.get_active_players()
+            if len(active_players) == 1:
+                await self.declare_winner(active_players[0])
+            else:
+                await self.send(text_data=json.dumps({"error": "Turn could not be assigned."}))
+
         except Exception as e:
             logger.error(f"Error in next_turn: {str(e)}")
             await self.send(text_data=json.dumps({"error": f"Error advancing turn: {str(e)}"}))
-        
+
+
     async def handle_sideshow(self, player_id, opponent_id,bet_amount):
         await self.send_game_data()
         from django.core.cache import cache

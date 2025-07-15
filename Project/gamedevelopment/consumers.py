@@ -443,46 +443,57 @@ class GameConsumer(AsyncWebsocketConsumer):
         logger.debug(f"Game state updated to {self.game_room.round_status}")
 
     async def handle_bet(self, player_id, amount):
-        logger.debug(f"Fetching player by ID: {player_id}")
+        logger.debug(f"Handling bet for player ID: {player_id}, amount: {amount}")
         player = await self.get_player_by_id(player_id)
-        if player:
-                logger.debug(f"Player found: {player.user.username} with {player.user.coins} coins")
-        else:
-            logger.debug("Player not found")
-            await self.send(text_data=json.dumps({'message': 'Player not found!'}))
+        if not player:
+            logger.error(f"Player {player_id} not found")
+            await self.send(text_data=json.dumps({'error': 'Player not found!'}))
             return
-        # Check if player is packed
         if player.is_packed:
             logger.debug(f"Player {player.user.username} is packed and cannot place a bet")
-            await self.send(text_data=json.dumps({'message': 'Packed players cannot place bets!'}))
+            await self.send(text_data=json.dumps({'error': 'Packed players cannot place bets!'}))
             return
-        
-        active_players = await database_sync_to_async(list)(self.game_room.players.filter(is_packed=False))
+
+        # Refresh game room state
+        await database_sync_to_async(self.game_room.refresh_from_db)()
         current_turn_index = self.game_room.current_turn
-        if not active_players:
-            logger.error("No active players available")
-            await self.send(text_data=json.dumps({'message': 'No active players available!'}))
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
+
+        if not all_players:
+            logger.error("No players available")
+            await self.send(text_data=json.dumps({'error': 'No players available!'}))
             return
-        
-        # Get previous player's bet for Teen Patti rules
-        prev_index = (current_turn_index - 1) % len(active_players)
-        prev_player = active_players[prev_index]
-        min_bet = prev_player.current_bet if prev_player.is_blind else prev_player.current_bet // 2
-        # Minimum bet calculation
+
+        # Find previous active player
+        prev_player = None
+        prev_index = (current_turn_index - 1 + len(all_players)) % len(all_players)
+        searched = 0
+        while searched < len(all_players):
+            candidate = all_players[prev_index]
+            if not candidate.is_packed and not candidate.is_spectator:
+                prev_player = candidate
+                break
+            prev_index = (prev_index - 1 + len(all_players)) % len(all_players)
+            searched += 1
+
+        # Calculate minimum bet
+        min_bet = prev_player.current_bet if prev_player else 1
         if player.is_blind:
-            min_bet = prev_player.current_bet if prev_player.is_blind else prev_player.current_bet // 2
-        else:  # Seen player
-            min_bet = prev_player.current_bet * 2 if prev_player.is_blind else prev_player.current_bet
-        
+            min_bet = prev_player.current_bet if prev_player.is_blind else prev_player.current_bet // 2 if prev_player else 1
+        else:
+            min_bet = prev_player.current_bet * 2 if prev_player and prev_player.is_blind else prev_player.current_bet if prev_player else 1
+
         if amount < min_bet:
-            await self.send(text_data=json.dumps({'message': f'Bet must be at least {min_bet}'}))
+            await self.send(text_data=json.dumps({'error': f'Bet must be at least {min_bet}'}))
             return
+
         user_coins = await database_sync_to_async(lambda: player.user.coins)()
         if user_coins >= amount:
-            logger.debug(f"Player {player.user.username}")
+            logger.debug(f"Player {player.user.username} placing bet: {amount}")
             await self.update_player_coins(player, -amount)
-            logger.debug(f"Amount:{amount}")
-            await self.update_game_room_pot(amount,context='handle_bet')
+            await self.update_game_room_pot(amount, context='handle_bet')
             await self.save_current_bet(player, amount)
             await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
             active_players_count = await self.get_active_players_count()
@@ -493,49 +504,59 @@ class GameConsumer(AsyncWebsocketConsumer):
             else:
                 await self.send_game_data()
         else:
-            logger.debug(f"Insufficient balance for {player.user.username}: {player.user.coins} < {amount}")
-            await self.send(text_data=json.dumps({'message': 'Insufficient balance!'}))
+            logger.debug(f"Insufficient balance for {player.user.username}: {user_coins} < {amount}")
+            await self.send(text_data=json.dumps({'error': f'Insufficient balance! Need {amount}, have {user_coins}'}))
 
 
-    async def handle_double_bet(self, player_id, amount):  # Add amount parameter
+    async def handle_double_bet(self, player_id, amount):
+        logger.debug(f"Handling double bet for player ID: {player_id}, amount: {amount}")
         player = await self.get_player_by_id(player_id)
         if not player:
+            logger.error(f"Player {player_id} not found")
+            await self.send(text_data=json.dumps({'error': 'Player not found!'}))
             return
-
-        # Check if player is packed
         if player.is_packed:
             logger.debug(f"Player {player.user.username} is packed and cannot place a double bet")
-            await self.send(text_data=json.dumps({'message': 'Packed players cannot place bets!'}))
+            await self.send(text_data=json.dumps({'error': 'Packed players cannot place bets!'}))
             return
 
-        # Ensure it's the player's turn
-        active_players = await database_sync_to_async(list)(self.game_room.players.filter(is_packed=False))
+        # Refresh game room state
+        await database_sync_to_async(self.game_room.refresh_from_db)()
         current_turn_index = self.game_room.current_turn
-        if not active_players:
-            logger.error("No active players available")
-            await self.send(text_data=json.dumps({'message': 'No active players available!'}))
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
+
+        if not all_players:
+            logger.error("No players available")
+            await self.send(text_data=json.dumps({'error': 'No players available!'}))
             return
 
-        prev_index = (current_turn_index - 1) % len(active_players)
-        prev_player = active_players[prev_index]
-        
-        logger.debug(f"Final bet amount: {amount}")
+        # Find previous active player
+        prev_player = None
+        prev_index = (current_turn_index - 1 + len(all_players)) % len(all_players)
+        searched = 0
+        while searched < len(all_players):
+            candidate = all_players[prev_index]
+            if not candidate.is_packed and not candidate.is_spectator:
+                prev_player = candidate
+                break
+            prev_index = (prev_index - 1 + len(all_players)) % len(all_players)
+            searched += 1
+
         user_coins = await database_sync_to_async(lambda: player.user.coins)()
         if user_coins >= amount:
             await self.update_player_coins(player, -amount)
-            await self.update_game_room_pot(amount,context='handle_double_bet')
-            await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+            await self.update_game_room_pot(amount, context='handle_double_bet')
             await self.save_current_bet(player, amount)
+            await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
             active_players_count = await self.get_active_players_count()
             await self.next_turn(active_players_count)
             await self.update_game_state("betting")
-
-            # if active_players_count <= 1:
-            #     await self.declare_winner()
-            # else:
             await self.send_game_data()
         else:
-            await self.send(text_data=json.dumps({'message': f'Insufficient balance for double bet! Need {amount}, have {user_coins}'}))
+            logger.debug(f"Insufficient balance for {player.user.username}: {user_coins} < {amount}")
+            await self.send(text_data=json.dumps({'error': f'Insufficient balance for double bet! Need {amount}, have {user_coins}'}))
     
     @database_sync_to_async
     def update_player_coins(self, player, amount):
@@ -674,56 +695,60 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({"error": f"Error advancing turn: {str(e)}"}))
 
 
-    async def handle_sideshow(self, player_id, opponent_id,bet_amount):
+    async def handle_sideshow(self, player_id, opponent_id, bet_amount):
         await self.send_game_data()
         from django.core.cache import cache
         player = await self.get_player_by_id(player_id)
         opponent = await self.get_player_by_id(opponent_id)
         if not player or not opponent:
-            await self.send(text_data=json.dumps({'message': 'Player or opponent not found!'}))
+            await self.send(text_data=json.dumps({'error': 'Player or opponent not found!'}))
+            return
+        if player.is_packed:
+            await self.send(text_data=json.dumps({'error': 'Packed players cannot request a sideshow!'}))
             return
 
-        # Prevent packed players from requesting sideshows
-        if player.is_packed:
-            await self.send(text_data=json.dumps({'message': 'Packed players cannot request a sideshow!'}))
-            return
-        
-        await sync_to_async(self.game_room.refresh_from_db)()        
-        active_players = await self.get_active_players()
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
         current_turn_index = self.game_room.current_turn
 
         # Check if opponent is the previous active player
-        prev_index = (current_turn_index - 1) % len(active_players)
-        logger.debug(f"Active players: {[p.user.id for p in active_players]}")
-        logger.debug(f"Current turn index: {current_turn_index}")
-        logger.debug(f"Prev turn index: {prev_index}")
-        logger.debug(f"Prev turn index player: {active_players[prev_index].user.id}")
-        logger.debug(f"Opponent ID: {opponent.user.id}")
-        if active_players[prev_index].user.id != opponent.user.id:
-            await self.send(text_data=json.dumps({'message': 'Sideshow can only be requested with the previous player!'}))
+        prev_player = None
+        prev_index = (current_turn_index - 1 + len(all_players)) % len(all_players)
+        searched = 0
+        while searched < len(all_players):
+            candidate = all_players[prev_index]
+            if not candidate.is_packed and not candidate.is_spectator:
+                prev_player = candidate
+                break
+            prev_index = (prev_index - 1 + len(all_players)) % len(all_players)
+            searched += 1
+
+        if not prev_player or prev_player.user.id != opponent.user.id:
+            await self.send(text_data=json.dumps({'error': 'Sideshow can only be requested with the previous player!'}))
             return
 
-        # Check if player has bet enough
+        # Check bet amount and deduct
         if bet_amount is not None:
             if player.user.coins < bet_amount:
-                await self.send(text_data=json.dumps({'message': 'Insufficient coins for sideshow bet!'}))
+                await self.send(text_data=json.dumps({'error': 'Insufficient coins for sideshow bet!'}))
                 return
-            await self.update_player_coins(player, -bet_amount)  # Deduct coins
-            await self.save_current_bet(player, opponent.current_bet)  # Set current_bet
-            await self.update_game_room_pot(bet_amount,context = "handle_sideshow")  # Add to pot
+            await self.update_player_coins(player, -bet_amount)
+            await self.save_current_bet(player, opponent.current_bet)
+            await self.update_game_room_pot(bet_amount, context="handle_sideshow")
             logger.debug(f"Player {player.user.username} bet {bet_amount} to match {opponent.user.username}")
-        
+
         if player.current_bet < opponent.current_bet:
-            await self.send(text_data=json.dumps({'message': 'You must match the previous bet for a sideshow!'}))
+            await self.send(text_data=json.dumps({'error': 'You must match the previous bet for a sideshow!'}))
             return
-        
         if self.game_room.round_status != 'betting':
-            await self.send(text_data=json.dumps({'message': 'Sideshow can only be requested during betting!'}))
+            await self.send(text_data=json.dumps({'error': 'Sideshow can only be requested during betting!'}))
             return
-            # Add blind/seen check
         if player.is_blind or opponent.is_blind:
-            await self.send(text_data=json.dumps({'message': 'Sideshow is only available between seen players!'}))
+            await self.send(text_data=json.dumps({'error': 'Sideshow is only available between seen players!'}))
             return
+
         # Store sideshow request in cache
         sideshow_key = f"sideshow_{self.game_room_id}_{player_id}_{opponent_id}"
         cache.set(sideshow_key, {'player_id': str(player_id), 'opponent_id': str(opponent_id), 'accepted': None}, timeout=15)
@@ -734,22 +759,20 @@ class GameConsumer(AsyncWebsocketConsumer):
                 "type": "sideshow_request",
                 "requester_id": player_id,
                 "opponent_id": opponent_id,
-                "sideshow_key": sideshow_key 
+                "sideshow_key": sideshow_key
             }
         )
 
-        # Notify requester that request is pending
         await self.send(text_data=json.dumps({'message': f'Sideshow request sent to {opponent.user.username}. Awaiting response...'}))
 
-        # Wait for response with a timeout (e.g., 10 seconds)
         timeout = 15
-        for _ in range(timeout * 2):  # Check every 0.5 seconds
+        for _ in range(timeout * 2):
             request = cache.get(sideshow_key)
             if request and request['accepted'] is not None:
                 break
             await asyncio.sleep(0.5)
 
-        request = cache.get(sideshow_key) or {'accepted': None}  # Fallback if cache expires
+        request = cache.get(sideshow_key) or {'accepted': None}
         active_players_count = await self.get_active_players_count()
         if request['accepted'] is None:
             logger.debug(f"Sideshow request to {opponent.user.username} (timeout)")
@@ -761,14 +784,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                     "packed_player": None
                 }
             )
-
         elif request['accepted']:
-            # Compare hands if accepted
             winner = await self.compare_hands(player, opponent)
             loser = opponent if winner == player else player
             loser.is_packed = True
             await database_sync_to_async(loser.save)()
-
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
@@ -780,7 +800,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 }
             )
         else:
-            # Declined
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
@@ -790,20 +809,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 }
             )
         cache.delete(sideshow_key)
-        # Always advance turn unless game ends
+
         if active_players_count > 1:
             logger.debug("Advancing turn after sideshow")
             await self.next_turn(active_players_count)
-            # Log the player who now has control
-            active_players = await self.get_active_players()
-            if active_players:
-                next_player = active_players[self.game_room.current_turn]
-                logger.debug(f"After sideshow, control passed to player: {next_player.user.username} (ID: {next_player.user.id})")
-            else:
-                logger.debug("No active players available after sideshow")
         else:
             await self.declare_winner()
-            logger.debug("Game ended after sideshow, no player has control")
         await self.send_game_data()
 
     async def sideshow_request(self, event):
@@ -867,39 +878,52 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.update_game_state("showdown")
         player = await self.get_player_by_id(player_id)
         if not player:
-            return
-        
-        active_players = await self.get_active_players()
-        if len(active_players) != 2:
-            await self.send(text_data=json.dumps({'message': 'Show can only be called with exactly 2 players!'}))
-            return
-        
-        if self.game_room.round_status != 'showdown':
-            logger.debug(f"Invalid game state: {self.game_room.round_status}")
-            await self.send(text_data=json.dumps({'message': 'Show can only be called during showdown!'}))
+            logger.error(f"Player {player_id} not found")
+            await self.send(text_data=json.dumps({'error': 'Player not found!'}))
             return
 
-        # Calculate required stake (current stake if blind, double if seen)
+        active_players = await self.get_active_players()
+        if len(active_players) != 2:
+            await self.send(text_data=json.dumps({'error': 'Show can only be called with exactly 2 players!'}))
+            return
+        if self.game_room.round_status != 'showdown':
+            logger.debug(f"Invalid game state: {self.game_room.round_status}")
+            await self.send(text_data=json.dumps({'error': 'Show can only be called during showdown!'}))
+            return
+
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
         current_turn_index = self.game_room.current_turn
-        prev_index = (current_turn_index - 1) % len(active_players)
-        prev_player = active_players[prev_index]
-        amount = (prev_player.current_bet 
-          if player.is_blind or (not player.is_blind and not prev_player.is_blind) 
-          else 2 * prev_player.current_bet)
+
+        # Find previous active player
+        prev_player = None
+        prev_index = (current_turn_index - 1 + len(all_players)) % len(all_players)
+        searched = 0
+        while searched < len(all_players):
+            candidate = all_players[prev_index]
+            if not candidate.is_packed and not candidate.is_spectator:
+                prev_player = candidate
+                break
+            prev_index = (prev_index - 1 + len(all_players)) % len(all_players)
+            searched += 1
+
+        amount = (prev_player.current_bet
+                if player.is_blind or (not player.is_blind and not prev_player.is_blind)
+                else 2 * prev_player.current_bet if prev_player else 1)
         user_coins = await database_sync_to_async(lambda: player.user.coins)()
         if user_coins < amount:
             logger.debug(f"Insufficient balance for {player.user.username}: {user_coins} < {amount}")
             await self.send(text_data=json.dumps({
-                'message': f'Insufficient coins! Need {amount}, have {user_coins}'
+                'error': f'Insufficient coins! Need {amount}, have {user_coins}'
             }))
             return
 
-         # Deduct stake and update pot
         if user_coins >= amount:
             logger.debug(f"Deducting stake {amount} from {player.user.username}")
             await database_sync_to_async(self.game_room.refresh_from_db)()
             await self.update_player_coins(player, -amount)
-            await self.update_game_room_pot(amount,context='handle_show')
+            await self.update_game_room_pot(amount, context='handle_show')
             await self.save_current_bet(player, amount)
 
         await self.send_game_data()
@@ -914,44 +938,37 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.debug(f"{opponent.user.username}'s hand: {opponent.hand_cards}")
         except StopIteration:
             logger.error("No distinct opponent found in active_players")
-            await self.send(text_data=json.dumps({'message': 'Error: No valid opponent for showdown!'}))
+            await self.send(text_data=json.dumps({'error': 'Error: No valid opponent for showdown!'}))
             return
 
         winner = await self.compare_hands(player, opponent)
         loser = opponent if winner.user.id == player.user.id else player
         logger.debug(f"Winner: {winner.user.username}, Loser: {loser.user.username}")
 
-        # Save to GameHistory
         await self.save_game_history(winner, 'show', self.game_room.current_pot)
 
-        # Declare winner and update coins
         logger.debug(f"Awarding pot of {self.game_room.current_pot} to {winner.user.username}")
         winner.user.coins += self.game_room.current_pot
         await database_sync_to_async(winner.user.save)()
-        await database_sync_to_async(self.game_room.save)()
         self.game_room.current_pot = 0
         await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
-        logger.debug(f"Pot reset to {self.game_room.current_pot}, winner {winner.user.username} awarded")
         await self.channel_layer.group_send(
-        self.room_group_name,
-        {
-        "type": "show_result",
-        "message": f'Show: {winner.user.username} wins the pot!',
-        "winner_id": winner.user.id,
-        "hand_winner": winner.hand_cards,
-        "hand_loser": opponent.hand_cards
-    }
-    )
+            self.room_group_name,
+            {
+                "type": "show_result",
+                "message": f'Show: {winner.user.username} wins the pot!',
+                "winner_id": winner.user.id,
+                "hand_winner": winner.hand_cards,
+                "hand_loser": opponent.hand_cards
+            }
+        )
         logger.debug("Sent show_result message")
 
-        # Schedule new round after a 3-second delay
         logger.debug("Scheduling new round after showdown with 5-second delay")
-        await asyncio.sleep(5)  # Wait 5 seconds to allow players to see the result
-        logger.debug("Executing restart_round after delay")
-        self.game_room.is_active = False  # Reset is_active before restarting
+        await asyncio.sleep(5)
+        self.game_room.is_active = False
         await database_sync_to_async(self.game_room.save)(update_fields=['is_active'])
         await self.restart_round()
-    
 
 
     async def restart_round(self):
@@ -985,8 +1002,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         
         await reset_players(all_players, boot_amount=100)
 
-        # Set is_active = True for the new round
-        self.game_room.is_active = True
+        # Set is_active = False for the new round
+        self.game_room.is_active = False
         await database_sync_to_async(self.game_room.save)(update_fields=['is_active'])
         # Additional logging to verify hand_cards are cleared after reset
         @database_sync_to_async
@@ -1042,7 +1059,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         await self.update_game_state("betting")
         logger.debug(f"New round started with pot = {self.game_room.current_pot}, is_active = {self.game_room.is_active}")        
-        self.game_room.is_active = False
+        self.game_room.is_active = True
         await database_sync_to_async(self.game_room.save)(update_fields=['is_active'])
         logger.debug(f"New round: is_active = {self.game_room.is_active}, round_status = {self.game_room.round_status}")
 

@@ -32,6 +32,7 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.game_room_id = self.scope['url_route']['kwargs']['game_room_id']
         self.room_group_name = f'game_{self.game_room_id}'
+        self.turn_timer = None
 
         self.game_room = await self.get_game_room(self.game_room_id)
 
@@ -40,10 +41,16 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
-        self.player = await self.get_player(self.scope["user"], self.game_room)
-        if not self.player:
-            self.player = await self.create_player(self.scope["user"], self.game_room)
-            logger.debug(f"Created player: {self.player}")
+        try:
+            self.player = await self.get_player(self.scope["user"], self.game_room)
+            if not self.player:
+                self.player = await self.create_player(self.scope["user"], self.game_room)
+                logger.debug(f"Created player: {self.player}")
+        except ValueError as e:
+            await self.accept()
+            await self.send(text_data=json.dumps({"error": str(e)}))
+            await self.close()
+            return
         
         await database_sync_to_async(self.game_room.refresh_from_db)()
         logger.debug(f"Connected to game room {self.game_room_id}: pot = {self.game_room.current_pot}, round_status = {self.game_room.round_status}, is_active = {self.game_room.is_active}")        
@@ -95,6 +102,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         """Handles player exit in real-time."""
+        if self.turn_timer:
+            await self.cancel_timer()
         if self.game_room and self.player:
             await self.remove_player(self.player, self.game_room)
 
@@ -125,6 +134,85 @@ class GameConsumer(AsyncWebsocketConsumer):
             "player_id": event["player_id"]
         }))
 
+    async def start_timer(self, player):
+        """Start a 30-second timer for the player's turn."""
+        logger.debug(f"Starting timer for player {player.user.username} (ID: {player.user.id}) with duration 30s")
+        await self.cancel_timer()  # Cancel any existing timer using the robust method
+        self.turn_timer = asyncio.create_task(self.timer_task(player))
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "timer_start",
+                "player_id": player.user.id,
+                "duration": 30  # Timer duration in seconds
+            }
+        )
+
+    async def timer_task(self, player):
+        """Task to handle turn timeout."""
+        try:
+            logger.debug(f"Starting 30-second timer for player {player.user.username} (ID: {player.user.id})")
+            await asyncio.sleep(30)
+            if player.is_packed:
+                logger.debug(f"Player {player.user.username} already packed, no action needed")
+                return
+            logger.debug(f"Timer expired for player {player.user.username}, marking as packed")
+            player.is_packed = True
+            await database_sync_to_async(player.save)(update_fields=['is_packed'])
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "player_packed",
+                    "player_id": player.user.id,
+                    "message": f"Player {player.user.username} packed due to timeout"
+                }
+            )
+            active_players_count = await self.get_active_players_count()
+            if active_players_count <= 1:
+                remaining_players = await self.get_active_players()
+                if remaining_players:
+                    await self.declare_winner(remaining_players[0])
+                else:
+                    await self.update_game_state("waiting")
+                    await self.send(text_data=json.dumps({'message': 'No active players remain!'}))
+            else:
+                await self.send_game_data()
+                await self.next_turn(active_players_count)
+                await self.send_game_data()
+        except asyncio.CancelledError:
+            logger.debug(f"Timer for player {player.user.username} cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Error in timer_task for player {player.user.username}: {e}")
+
+    async def cancel_timer(self):
+        if self.turn_timer and not self.turn_timer.done():
+            self.turn_timer.cancel()
+            try:
+                await self.turn_timer
+            except asyncio.CancelledError:
+                logger.debug("Timer successfully canceled")
+        self.turn_timer = None
+
+
+    async def timer_start(self, event):
+        """Handle timer start event."""
+        logger.debug(f"Sending timer_start to client for player {event['player_id']}")
+        await self.send(text_data=json.dumps({
+            "type": "timer_start",
+            "player_id": event["player_id"],
+            "duration": event["duration"]
+        }))
+
+    async def player_packed(self, event):
+        """Handle player packed event."""
+        logger.debug(f"Sending player_packed to client for player {event['player_id']}")
+        await self.send(text_data=json.dumps({
+            "type": "player_packed",
+            "player_id": event["player_id"],
+            "message": event["message"]
+        }))
+    
     @database_sync_to_async
     def get_player_user_id(self, player):
     #Fetch the player user id.
@@ -163,8 +251,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             "status": self.game_room.is_active,
             "round_status": self.game_room.round_status  # Include the round status here
         }
-        
-
+        # logger.debug(json.dumps(game_data, indent=2))
         # Send data to WebSocket group
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -221,14 +308,13 @@ class GameConsumer(AsyncWebsocketConsumer):
         logger.debug(f"start_game called for room {self.game_room_id}")
         player_count = await self.get_active_players_count()
         logger.debug(f"Player count: {player_count}")
-        await self.send_game_data()
 
         if player_count < 2:
             logger.debug("Not enough players to start the game.")
             await self._reset_is_active()
             return
             
-                    # Step 3: Begin game initialization
+        # Step 3: Begin game initialization
         logger.debug("Game is ready to start!")
         await self.update_game_state("distribution")
         logger.debug(f"Game started: pot = {self.game_room.current_pot}, round_status = {self.game_room.round_status}, is_active = {self.game_room.is_active}")
@@ -254,6 +340,22 @@ class GameConsumer(AsyncWebsocketConsumer):
         self.game_room.current_turn = 0
         await database_sync_to_async(self.game_room.save)(update_fields=['current_turn'])
         await self.send_game_data()
+        await self.start_current_turn_timer()  # Start the timer for the first player
+        
+    async def start_current_turn_timer(self):
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        current_index = self.game_room.current_turn
+
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
+
+        if 0 <= current_index < len(all_players):
+            candidate = all_players[current_index]
+            if not candidate.is_packed and not candidate.is_spectator:
+                await self.start_timer(candidate)
+                logger.debug(f"Started timer for player at index {current_index} - {candidate.user.username}")
+
 
 # Helper method to check and lock game start atomically
     @database_sync_to_async
@@ -412,8 +514,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     def create_player(self, user, game_room):
         # """Creates a new player if not found."""
         from .models import Player
+        boot_amount = 100
         if not game_room:
             raise ValueError("Invalid game room")
+        if user.coins < boot_amount:
+            logger.debug(f"Player {user.username} has insufficient coins to join the game.")
+            raise ValueError("Insufficient coins to join the game.Minimum is 100 coins required.")
         return Player.objects.create(user=user, table=game_room)
 
     @database_sync_to_async
@@ -444,6 +550,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def handle_bet(self, player_id, amount):
         logger.debug(f"Handling bet for player ID: {player_id}, amount: {amount}")
+        if self.turn_timer:
+            await self.cancel_timer()  # Cancel timer on action
         player = await self.get_player_by_id(player_id)
         if not player:
             logger.error(f"Player {player_id} not found")
@@ -505,11 +613,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.send_game_data()
         else:
             logger.debug(f"Insufficient balance for {player.user.username}: {user_coins} < {amount}")
-            await self.send(text_data=json.dumps({'error': f'Insufficient balance! Need {amount}, have {user_coins}'}))
-
+            await self.send(text_data=json.dumps({'message': 'Insufficent Funds for Bet!'}))
 
     async def handle_double_bet(self, player_id, amount):
         logger.debug(f"Handling double bet for player ID: {player_id}, amount: {amount}")
+        if self.turn_timer:
+            await self.cancel_timer()  # Cancel timer on action
+
         player = await self.get_player_by_id(player_id)
         if not player:
             logger.error(f"Player {player_id} not found")
@@ -544,6 +654,16 @@ class GameConsumer(AsyncWebsocketConsumer):
             prev_index = (prev_index - 1 + len(all_players)) % len(all_players)
             searched += 1
 
+        # Calculate expected double bet amount
+        double_bet = prev_player.current_bet * 2 if prev_player else 2
+        if player.is_blind:
+            double_bet = prev_player.current_bet * 2 if prev_player.is_blind else prev_player.current_bet if prev_player else 2
+        else:
+            double_bet = prev_player.current_bet * 4 if prev_player and prev_player.is_blind else prev_player.current_bet * 2 if prev_player else 2
+        if amount != double_bet:
+            await self.send(text_data=json.dumps({'error': f'Double bet must be {double_bet}'}))
+            return
+        
         user_coins = await database_sync_to_async(lambda: player.user.coins)()
         if user_coins >= amount:
             await self.update_player_coins(player, -amount)
@@ -556,8 +676,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.send_game_data()
         else:
             logger.debug(f"Insufficient balance for {player.user.username}: {user_coins} < {amount}")
-            await self.send(text_data=json.dumps({'error': f'Insufficient balance for double bet! Need {amount}, have {user_coins}'}))
-    
+            await self.send(text_data=json.dumps({'message': 'Insufficent Funds for double bet!'}))    
+
     @database_sync_to_async
     def update_player_coins(self, player, amount):
         with transaction.atomic():
@@ -592,8 +712,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.debug(f"After update - Current bet for {player.user.username}: {player.current_bet}")
 
     async def handle_pack(self, player_id):
+        if self.turn_timer:
+            await self.cancel_timer()  # Cancel timer on action
+
         logger.debug(f"Handling pack for player ID: {player_id}")
-        
+        await database_sync_to_async(self.game_room.refresh_from_db)()
         # Fetch player and verify
         player = await self.get_player_by_id(player_id)
         if not player:
@@ -605,9 +728,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.debug(f"Player {player.user.username} is already packed, ignoring action")
             await self.send(text_data=json.dumps({'message': 'You are already packed!'}))
             return
+        
+        if self.game_room.round_status != 'betting':
+            logger.debug(f"Ignoring pack for {player.user.username} since game state is {self.game_room.round_status}")
+            await self.send(text_data=json.dumps({'message': 'Game has not started !'}))
+            return
 
         # Refresh game room state to ensure latest pot and turn
-        await database_sync_to_async(self.game_room.refresh_from_db)()
+        
         current_pot = self.game_room.current_pot if self.game_room.current_pot is not None else 0
         logger.debug(f"Before packing: pot = {current_pot}, player = {player.user.username}")
 
@@ -648,6 +776,9 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def next_turn(self, active_players_count):
         logger.debug(f"Entering next_turn with active_players_count: {active_players_count}")
+        if self.turn_timer:
+            await self.cancel_timer()  # Cancel existing timer
+            logger.debug("Existing timer canceled")
 
         if active_players_count <= 1:
             logger.debug("Only one or no active player remains, checking for winner")
@@ -657,6 +788,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             return
 
         try:
+            logger.debug("Refreshing game room state for next turn")
             await database_sync_to_async(self.game_room.refresh_from_db)()
 
             all_players = await database_sync_to_async(lambda: list(
@@ -678,6 +810,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     self.game_room.current_turn = next_index
                     await database_sync_to_async(self.game_room.save)(update_fields=["current_turn"])
                     logger.debug(f"Next turn set to index {next_index} - player: {candidate.user.username}")
+                    await self.start_timer(candidate)  # Start timer for the next player
                     await self.send_game_data()
                     return
                 next_index = (next_index + 1) % total_players
@@ -732,7 +865,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         # Check bet amount and deduct
         if bet_amount is not None:
             if player.user.coins < bet_amount:
-                await self.send(text_data=json.dumps({'error': 'Insufficient coins for sideshow bet!'}))
+                await self.send(text_data=json.dumps({'message': 'Insufficent funds for sideshow!'}))
                 return
             await self.update_player_coins(player, -bet_amount)
             await self.save_current_bet(player, opponent.current_bet)
@@ -873,6 +1006,9 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     
     async def handle_show(self, player_id):
+        if self.turn_timer:
+            await self.cancel_timer()  # Cancel timer on action
+
         await database_sync_to_async(self.game_room.refresh_from_db)()
         logger.debug(f"Initial current_pot in handle_show: {self.game_room.current_pot}")
         await self.update_game_state("showdown")
@@ -914,9 +1050,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         user_coins = await database_sync_to_async(lambda: player.user.coins)()
         if user_coins < amount:
             logger.debug(f"Insufficient balance for {player.user.username}: {user_coins} < {amount}")
-            await self.send(text_data=json.dumps({
-                'error': f'Insufficient coins! Need {amount}, have {user_coins}'
-            }))
+            await self.send(text_data=json.dumps({'message': 'Insufficent funds for show!'}))
             return
 
         if user_coins >= amount:
@@ -986,6 +1120,41 @@ class GameConsumer(AsyncWebsocketConsumer):
             }))
             await self._reset_is_active()
             return
+        
+        # Check coins and remove players with insufficient balance
+        boot_amount = 100
+        players_to_remove = []
+        for player in all_players:
+            user_coins = await database_sync_to_async(lambda: player.user.coins)()
+            if user_coins < boot_amount:
+                logger.debug(f"Player {player.user.username} has insufficient coins: {user_coins} < {boot_amount}. Marking for removal.")
+                players_to_remove.append(player)
+
+        # Remove players with insufficient coins
+        for player in players_to_remove:
+            await self.remove_player(player, self.game_room)
+            logger.debug(f"Removed player {player.user.username} from game room {self.game_room_id}")
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "player_disconnected",
+                    "player_id": await database_sync_to_async(lambda: player.user.id)(),
+                    "message": f"Player {player.user.username} removed due to insufficient coins (less than {boot_amount})."
+                }
+            )
+        
+        # Refresh player list after removals
+        all_players = await database_sync_to_async(lambda: list(self.game_room.players.all()))()
+        player_count = len(all_players)
+        logger.debug(f"Player count after coin check: {player_count}")
+        if player_count < 2:
+            logger.debug("Not enough players after coin check to restart the round.")
+            await self.update_game_state("waiting")
+            await self.send(text_data=json.dumps({
+                'message': 'Not enough players to continue, waiting for more players!'
+            }))
+            await self._reset_is_active()
+            return
 
         @database_sync_to_async
         def reset_players(players, boot_amount):
@@ -1010,7 +1179,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         def log_player_cards(players):
             for player in players:
                 player.refresh_from_db() 
-                logger.debug(f"After reset - Player {player.user.username} hand_cards: {player.hand_cards}")
+                logger.debug(f"After reset - Player {player.user.username} -is_packed : {player.is_packed} - hand_cards: {player.hand_cards}")
 
         await log_player_cards(all_players)
 
@@ -1062,8 +1231,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         self.game_room.is_active = True
         await database_sync_to_async(self.game_room.save)(update_fields=['is_active'])
         logger.debug(f"New round: is_active = {self.game_room.is_active}, round_status = {self.game_room.round_status}")
-
+        
         await self.send_game_data()
+        await self.start_current_turn_timer()
 
 
     async def toggle_seen(self, player):

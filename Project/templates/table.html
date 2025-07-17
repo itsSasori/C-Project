@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Teen Patti Table</title>
     <link rel="stylesheet" type="text/css" href="{% static 'css/table.css' %}">
+    <style>
+        #timer {
+    font-weight: bold;
+    text-align: center;
+    }
+    #timer-countdown {
+        font-weight: bold;
+    }
+</style>
 </head>
 <body>
     <div class="container">
@@ -61,7 +70,10 @@
                     <div class="table-current-bet">♦ 12,800</div>
                     <div class="progress-bar"><div class="progress"></div>
                 </div>
-                    
+                    <div id="game-log"></div>
+                    <div id="timer" style="display: none; font-size: 1.2em; color: red; margin-top: 10px;">
+                        Time left: <span id="timer-countdown">30</span> seconds
+                    </div>
                 </div>
             </div>
             
@@ -90,6 +102,7 @@
     let cardsToggled = false;  // Tracks if "See Cards" has been clicked
     let localHandCards = [];   // Stores cards locally after toggle
     let activeSideshowKey = null; // Track the current sideshow request
+    let timerInterval = null; // Track timer interval
 const socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameRoomId}/`);
 
 socket.onopen = function(e) {
@@ -100,7 +113,13 @@ socket.onmessage = function(e) {
     const data = JSON.parse(e.data);
     console.log("Received game data:", data);
     console.log("Keys in received data:", Object.keys(data));
-
+    if (data.error){
+        updateGameUI(data.error);
+        setTimeout(() => {
+            window.location.href = '/gamedevelopment/interface/'; // Redirect to lobby
+        }, 3000); // Show error for 3 seconds before redirect
+        return;
+    }
     if (data.type === "game_update") {
         currentTurn = data.current_turn;
         round_status = data.round_status;
@@ -109,6 +128,13 @@ socket.onmessage = function(e) {
             console.log("New round detected. Resetting card visibility.");
             cardsToggled = false;
             localHandCards = [];
+            document.getElementById("pack-btn").disabled = true;
+            document.getElementById("sideshow-btn").disabled = true;
+            document.getElementById("bet-btn").disabled = true;
+            document.getElementById("double-bet-btn").disabled = true;
+            const controls = document.getElementById("controls");
+            controls.style.display = "none";
+        
 
             // Clear cards for ALL players and reset their UI
             playersData.forEach(player => {
@@ -172,7 +198,16 @@ socket.onmessage = function(e) {
         console.log(`Sideshow button status after sideshow_result: disabled=${sideshowBtn.disabled}, display=${sideshowBtn.style.display}`);
     } else if (data.type === "show_result") {
         winnerprompt(data);
-    } else if (data.type === "player_disconnected") {
+    }else if (data.type === "timer_start") {
+        if (!playersData.length) {
+            console.warn("playersData not initialized for timer_start, waiting for game_update");
+            return;
+        }
+        handleTimerStart(data);
+    }else if (data.type === "player_packed") {
+        updateGameUI(data.message);
+        stopTimer();
+     } else if (data.type === "player_disconnected") {
         // Handle player leaving scenario
         console.log(`Player ${data.player_id} has disconnected.`);
         removePlayerFromUI(data.player_id);
@@ -390,11 +425,9 @@ function updatePlayerCards(playerId, cards) {
     console.log(`Player ${playerId} card visibility: ${shouldShow ? "Shown" : "Hidden"}`);
 }
 
-
-
-
-
 function updateGameUI(data) {
+    const gameLog = document.getElementById("game-log");
+    
     console.log("Updating game UI with data:", data);
     if (typeof data === "string") {
         const statusDiv = document.getElementById("game-status");
@@ -418,6 +451,15 @@ function updateGameUI(data) {
         }, 5000); // Hide after 5 seconds
         return;
     }
+    if(data.message){
+        const messageElement = document.createElement("p");
+        messageElement.textContent = data.message;
+        gameLog.appendChild(messageElement);
+        gameLog.scrollTop = gameLog.scrollHeight;
+        setTimeout(() => {
+        messageElement.remove();
+    }, 3000)
+    }
     console.log("table-pot", data.table_pot);
     console.log("pot", data.pot);
     const tablePotElement = document.querySelector(".table-pot");
@@ -430,6 +472,56 @@ function updateGameUI(data) {
     }
 }
 
+function handleTimerStart(data) {
+    console.log(`handleTimerStart: player_id=${data.player_id}, duration=${data.duration}, currentUserId=${currentUserId}`);
+    const timerDiv = document.getElementById("timer");
+    const timerCountdown = document.getElementById("timer-countdown");
+    const player = playersData.find(p => Number(p.id) === Number(data.player_id));
+
+    if (!player) {
+        console.error(`Player ${data.player_id} not found in playersData`);
+        timerDiv.style.display = "none";
+        return;
+    }
+
+    if (!timerCountdown) {
+        console.error("timer-countdown element not found in DOM");
+        timerDiv.style.display = "none";
+        return;
+    }
+
+    // Update timer display without overwriting timerCountdown
+    timerDiv.style.display = "block";
+    timerDiv.childNodes[0].textContent = `Time left for ${player.username}: `;
+    timerCountdown.textContent = data.duration;
+
+    stopTimer(); // Clear any existing timer
+    let timeLeft = data.duration;
+    timerInterval = setInterval(() => {
+        timeLeft--;
+        console.log(`Timer tick: ${timeLeft} seconds left for ${player.username}`);
+        if (timerCountdown) {
+            timerCountdown.textContent = timeLeft;
+        } else {
+            console.error("timerCountdown element lost in interval");
+            stopTimer();
+            return;
+        }
+        if (timeLeft <= 0) {
+            console.log(`Timer expired for ${player.username}`);
+            stopTimer();
+            timerDiv.style.display = "none";
+        }
+    }, 1000);
+}
+
+function stopTimer() {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+}
+
 function updateControls(data) {
     console.log("updateControls:", { 
         round_status: data.round_status, 
@@ -437,13 +529,6 @@ function updateControls(data) {
         currentUserId, 
         playerAtTurn: data.players && data.current_turn < data.players.length ? data.players[data.current_turn] : null 
     });
-
-    // Handle error messages from backend
-    if (data.error) {
-        console.error("Backend error:", data.error);
-        alert("Game error: " + data.error);
-        return;
-    }
 
     const controls = document.getElementById("controls");
     const seeCardsBtn = document.querySelector(`#see-cards-btn-${currentUserId}`);
@@ -459,6 +544,8 @@ function updateControls(data) {
     if (!currentPlayer || currentPlayer.is_spectator) {
         controls.style.display = "none";
         if (seeCardsBtn) seeCardsBtn.style.display = "none";
+        document.getElementById("timer").style.display = "none"; // Hide timer
+        stopTimer();
         console.log("Controls hidden: Current player is a spectator or not found");
         return;
     }
@@ -494,7 +581,11 @@ function updateControls(data) {
 
     const sideshowBtn = document.getElementById("sideshow-btn");
     const showBtn = document.getElementById("show-btn");
-
+    const showAmount = prevPlayer
+            ? (currentPlayer.is_blind || (!currentPlayer.is_blind && !prevPlayer.is_blind)
+                ? prevPlayer.current_bet
+                : 2 * prevPlayer.current_bet)
+            : 1;
     // Show controls if it's the current player's turn and they're active
     if (round_status === "betting" && activePlayers.length > 0 && currentTurnPlayerId && 
         Number(currentTurnPlayerId) === Number(currentUserId) && !currentPlayer.is_packed) {        
@@ -504,6 +595,7 @@ function updateControls(data) {
         document.getElementById("pack-btn").disabled = false;
         sideshowBtn.style.display = isSideshowAllowed ? "inline-block" : "none";
         showBtn.style.display = showAllowed ? "inline-block" : "none";
+        showBtn.disabled = currentPlayer.coins < showAmount;
         document.getElementById("bet-btn").disabled = false;
         document.getElementById("double-bet-btn").disabled = false;
         if (seeCardsBtn && currentPlayer.is_blind) {
@@ -515,6 +607,10 @@ function updateControls(data) {
         if (seeCardsBtn) {
             seeCardsBtn.style.display = "none";
         }
+        showBtn.disabled = true;
+        showBtn.onclick = null;
+        document.getElementById("timer").style.display = "none"; // Hide timer
+        stopTimer();
         console.log("Controls hidden:", { round_status, currentTurnIndex, isPacked: currentPlayer?.is_packed });
     }
 
@@ -533,7 +629,21 @@ function removePlayerFromUI(playerId) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-    // Initialize buttons as disabled until first WebSocket update
+    const packBtn = document.getElementById("pack-btn");
+    const sideshowBtn = document.getElementById("sideshow-btn");
+
+    // Remove existing listeners to prevent duplication
+    packBtn.replaceWith(packBtn.cloneNode(true));
+    sideshowBtn.replaceWith(sideshowBtn.cloneNode(true));
+
+    // Reassign buttons after cloning
+    const newPackBtn = document.getElementById("pack-btn");
+    const newSideshowBtn = document.getElementById("sideshow-btn");
+
+    newPackBtn.addEventListener("click", packGame);
+    newSideshowBtn.addEventListener("click", requestSideshow);
+
+    // Initialize buttons as disabled
     updateBetButton({ players: [], active_players: [], current_turn: 0 });
     updateDoubleBetButton({ players: [], active_players: [], current_turn: 0 });
 });
@@ -546,13 +656,6 @@ function updateBetButton(data) {
         current_turn: data.current_turn, 
         currentUserId 
     });
-
-    // Handle error messages from backend
-    if (data.error) {
-        console.error("Backend error:", data.error);
-        alert("Game error: " + data.error);
-        return;
-    }
 
     const betButton = document.getElementById("bet-btn");
     const players = data.players || [];
@@ -590,10 +693,12 @@ function updateBetButton(data) {
             : (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet * 2 : (prevPlayer ? prevPlayer.current_bet : 1));
         console.log(`Bet button - prevPlayer.current_bet: ${prevPlayer?.current_bet}, minBet: ${minBet}`);
         betButton.textContent = `Bet ${minBet}`;
-        betButton.onclick = () => placeBet(minBet);
+        betButton.disabled = currentPlayer.coins < minBet;
+        betButton.onclick = betButton.disabled ? null : () => placeBet(minBet);
     } else {
         betButton.textContent = "Bet";
         betButton.onclick = null;
+        betButton.disabled = true; 
     }
 }
 
@@ -602,15 +707,18 @@ function placeBet(amount) {
             console.log("Bet is already in progress. Please wait.");
             return;
         }
+        const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+        if (!currentPlayer) {
+            console.error("Current player not found in playersData");
+            updateGameUI("Error: Player data not found!");
+            return;
+        }
+
+        if (currentPlayer.coins < amount) {
+            updateGameUI(`Insufficient balance! Need ${amount}, have ${currentPlayer.coins}`);
+            return;
+        }
         isBetting = true;
-        //const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
-        //if (!currentPlayer) return;
-
-       // const prevPlayerIndex = (currentTurn - 1 + playersData.length) % playersData.length;
-       // const prevPlayer = playersData[prevPlayerIndex];
-       // const minBet = currentPlayer.is_blind ? prevPlayer.current_bet : prevPlayer.current_bet * 2;
-       // const betAmount = Math.max(amount, minBet); // Use passed amount or minimum
-
         const data = {
             action: 'place_bet',
             player_id: currentUserId,
@@ -618,7 +726,8 @@ function placeBet(amount) {
         };
         socket.send(JSON.stringify(data));
         console.log("Bet placed:", amount);
-
+        stopTimer(); // Stop timer on action
+        document.getElementById("timer").style.display = "none";
         document.getElementById("bet-btn").disabled = true;
         setTimeout(() => {
             isBetting = false;
@@ -628,7 +737,8 @@ function placeBet(amount) {
 
 
    // Add this function to update the Double Bet button text
-function updateDoubleBetButton(data) {
+
+   function updateDoubleBetButton(data) {
     console.log("updateDoubleBetButton:", { 
         round_status: data.round_status, 
         current_turn: data.current_turn, 
@@ -681,10 +791,12 @@ function updateDoubleBetButton(data) {
             : (prevPlayer && prevPlayer.is_blind ? prevPlayer.current_bet * 4 : (prevPlayer ? prevPlayer.current_bet * 2 : 2));
         console.log(`Updated Double Bet button to: ${doubleAmount}`);
         doubleBetButton.textContent = `Double Bet ${doubleAmount}`;
-        doubleBetButton.onclick = () => placeDoubleBet(doubleAmount);
+        doubleBetButton.disabled = currentPlayer.coins < doubleAmount;
+        doubleBetButton.onclick = doubleBetButton.disabled ? null : () => placeDoubleBet(doubleAmount);
     } else {
         doubleBetButton.textContent = "Double Bet";
         doubleBetButton.onclick = null;
+        doubleBetButton.disabled = true;
     }
 }
 
@@ -694,24 +806,26 @@ function placeDoubleBet(doubleAmount) {
         console.log("Bet is already in progress. Please wait.");
         return;
     }
-    //const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
-    
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    if (!currentPlayer) {
+        console.error("Current player not found in playersData");
+        updateGameUI("Error: Player data not found!");
+        return;
+    }
+
+    if (currentPlayer.coins < doubleAmount) {
+        updateGameUI(`Insufficient balance for double bet! Need ${doubleAmount}, have ${currentPlayer.coins}`);
+        return;
+    }
     isBetting = true;
-
-    //const prevPlayerIndex = (currentTurn - 1 + playersData.length) % playersData.length;
-   // const prevPlayer = playersData[prevPlayerIndex];
-    
-
-   // const doubleAmount = currentPlayer.is_blind ? prevPlayer.current_bet * 2 : 
-    //                     (prevPlayer.is_blind ? prevPlayer.current_bet * 4 : prevPlayer.current_bet * 2);
-    
     socket.send(JSON.stringify({
         action: 'place_double_bet',
         player_id: currentUserId,
         amount: doubleAmount
     }));
     console.log(`Double bet placed: ${doubleAmount}`);
-
+    stopTimer(); // Stop timer on action
+    document.getElementById("timer").style.display = "none";
     document.getElementById("double-bet-btn").disabled = true;
     setTimeout(() => {
         isBetting = false;
@@ -719,16 +833,34 @@ function placeDoubleBet(doubleAmount) {
     }, 1000);
 }
 
-
+let isPacking = false;
  function packGame() {
-     const data = {
+    console.log("packGame triggered. Round status:", round_status, "Current user ID:", currentUserId);
+    if (isPacking) {
+        console.log("Pack action is already in progress. Please wait.");
+        return;
+    }
+    if (round_status !== "betting") {
+        console.log("Cannot pack: Game is not in betting state. Current state:", round_status);
+        return;
+    }
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    if (!currentPlayer || currentPlayer.is_packed || currentPlayer.is_spectator) {
+        console.log("Cannot pack: Player is already packed or a spectator");
+        return;
+    }
+    isPacking = true;
+    const data = {
          action: 'pack',
          player_id: currentUserId
          // Player ID
      };
-     socket.send(JSON.stringify(data));
-     document.getElementById("pack-btn").disabled = true;
-     updateGameUI("You have packed and folded this round.");
+    socket.send(JSON.stringify(data));
+    document.getElementById("pack-btn").disabled = true;
+    updateGameUI("You have packed and folded this round.");
+    setTimeout(() => {
+        isPacking = false;
+    }, 1000);
  }
 
  function showSideshowPrompt(requesterId) {     
@@ -793,6 +925,11 @@ let isRequestingSideshow = false;
     const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
     const betAmount = opponent.current_bet; // Amount to match
 
+    if (currentPlayer.coins < betAmount) {
+            updateGameUI(`Insufficient balance for sideshow! Need ${betAmount}, have ${currentPlayer.coins}`);
+            isRequestingSideshow = false;
+            return;
+        }
     const data = {
         action: 'sideshow',
         player_id: currentUserId,
@@ -807,6 +944,39 @@ let isRequestingSideshow = false;
 }
 
 function requestShow() {
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    if (!currentPlayer) {
+        console.error("Current player not found in playersData");
+        updateGameUI("Error: Player data not found!");
+        return;
+    }
+
+    const players = playersData;
+    const activePlayers = players.filter(p => !p.is_packed && !p.is_spectator);
+    const currentTurnIndex = currentTurn;
+    let prevPlayer = null;
+    let prevTurnIndex = (currentTurnIndex - 1 + players.length) % players.length;
+    let searched = 0;
+    while (searched < players.length) {
+        const candidate = players[prevTurnIndex];
+        if (candidate && activePlayers.includes(Number(candidate.id)) && !candidate.is_spectator && !candidate.is_packed) {
+                prevPlayer = candidate;
+                break;
+        }
+        prevTurnIndex = (prevTurnIndex - 1 + players.length) % players.length;
+        searched++;
+        }
+
+    const showAmount = prevPlayer
+            ? (currentPlayer.is_blind || (!currentPlayer.is_blind && !prevPlayer.is_blind)
+                ? prevPlayer.current_bet
+                : 2 * prevPlayer.current_bet)
+            : 1;
+
+    if (currentPlayer.coins < showAmount) {
+        updateGameUI(`Insufficient balance for show! Need ${showAmount}, have ${currentPlayer.coins}`);
+        return;
+    }
     const controls = document.getElementById("controls");
     const data = {
         action: 'show',
@@ -814,6 +984,8 @@ function requestShow() {
     };
     socket.send(JSON.stringify(data));
     console.log("Show requested");
+    stopTimer(); // Stop timer on action
+    document.getElementById("timer").style.display = "none";
     controls.style.display = "none";
 
 }

@@ -27,12 +27,15 @@ logging.basicConfig(
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 logger = logging.getLogger('gamedevelopment')
 
+# Global timer store by game_room_id
+TURN_TIMERS = {}
+TURN_START_TIMES = {}
+
 #Create your consumers.py here:
 class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.game_room_id = self.scope['url_route']['kwargs']['game_room_id']
         self.room_group_name = f'game_{self.game_room_id}'
-        self.turn_timer = None
 
         self.game_room = await self.get_game_room(self.game_room_id)
 
@@ -102,8 +105,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         """Handles player exit in real-time."""
-        if self.turn_timer:
-            await self.cancel_timer()
+        await self.cancel_timer()
         if self.game_room and self.player:
             await self.remove_player(self.player, self.game_room)
 
@@ -135,24 +137,54 @@ class GameConsumer(AsyncWebsocketConsumer):
         }))
 
     async def start_timer(self, player):
+        from datetime import datetime, timezone
         """Start a 30-second timer for the player's turn."""
         logger.debug(f"Starting timer for player {player.user.username} (ID: {player.user.id}) with duration 30s")
-        await self.cancel_timer()  # Cancel any existing timer using the robust method
-        self.turn_timer = asyncio.create_task(self.timer_task(player))
+
+        # Cancel existing timer for this room if it exists
+        old_timer = TURN_TIMERS.get(self.game_room_id)
+        if old_timer and not old_timer.done():
+            old_timer.cancel()
+            try:
+                await old_timer
+            except asyncio.CancelledError:
+                logger.debug("Old timer cancelled.")
+
+        TURN_START_TIMES[self.game_room_id] = datetime.now(timezone.utc)
+        # Start new timer and store it
+        task = asyncio.create_task(self.timer_task(player))
+        TURN_TIMERS[self.game_room_id] = task
+
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 "type": "timer_start",
                 "player_id": player.user.id,
-                "duration": 30  # Timer duration in seconds
+                "duration": 30
             }
         )
+
 
     async def timer_task(self, player):
         """Task to handle turn timeout."""
         try:
             logger.debug(f"Starting 30-second timer for player {player.user.username} (ID: {player.user.id})")
             await asyncio.sleep(30)
+            await database_sync_to_async(self.game_room.refresh_from_db)()
+            current_turn_index = self.game_room.current_turn
+            all_players = await database_sync_to_async(lambda: list(
+                self.game_room.players.select_related('user').order_by('id').all()
+            ))()
+
+            if not (0 <= current_turn_index < len(all_players)):
+                logger.debug("Invalid turn index. Exiting timer_task.")
+                return
+
+            current_player = all_players[current_turn_index]
+            if current_player.user.id != player.user.id:
+                logger.debug(f"Timer expired but it's no longer {player.user.username}'s turn. Ignoring.")
+                return
+
             if player.is_packed:
                 logger.debug(f"Player {player.user.username} already packed, no action needed")
                 return
@@ -186,13 +218,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Error in timer_task for player {player.user.username}: {e}")
 
     async def cancel_timer(self):
-        if self.turn_timer and not self.turn_timer.done():
-            self.turn_timer.cancel()
+        task = TURN_TIMERS.get(self.game_room_id)
+        if task and not task.done():
+            task.cancel()
             try:
-                await self.turn_timer
+                await task
             except asyncio.CancelledError:
-                logger.debug("Timer successfully canceled")
-        self.turn_timer = None
+                logger.debug("Timer successfully canceled.")
+        TURN_TIMERS.pop(self.game_room_id, None)
+
 
 
     async def timer_start(self, event):
@@ -550,8 +584,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def handle_bet(self, player_id, amount):
         logger.debug(f"Handling bet for player ID: {player_id}, amount: {amount}")
-        if self.turn_timer:
-            await self.cancel_timer()  # Cancel timer on action
+        await self.cancel_timer() # Cancel timer on action
         player = await self.get_player_by_id(player_id)
         if not player:
             logger.error(f"Player {player_id} not found")
@@ -617,8 +650,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def handle_double_bet(self, player_id, amount):
         logger.debug(f"Handling double bet for player ID: {player_id}, amount: {amount}")
-        if self.turn_timer:
-            await self.cancel_timer()  # Cancel timer on action
+        await self.cancel_timer() # Cancel timer on action
 
         player = await self.get_player_by_id(player_id)
         if not player:
@@ -712,10 +744,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.debug(f"After update - Current bet for {player.user.username}: {player.current_bet}")
 
     async def handle_pack(self, player_id):
-        if self.turn_timer:
-            await self.cancel_timer()  # Cancel timer on action
-
         logger.debug(f"Handling pack for player ID: {player_id}")
+        await self.cancel_timer() # Cancel timer on action
         await database_sync_to_async(self.game_room.refresh_from_db)()
         # Fetch player and verify
         player = await self.get_player_by_id(player_id)
@@ -776,9 +806,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def next_turn(self, active_players_count):
         logger.debug(f"Entering next_turn with active_players_count: {active_players_count}")
-        if self.turn_timer:
-            await self.cancel_timer()  # Cancel existing timer
-            logger.debug("Existing timer canceled")
+        await self.cancel_timer() # Cancel existing timer
+        logger.debug("Existing timer canceled")
 
         if active_players_count <= 1:
             logger.debug("Only one or no active player remains, checking for winner")
@@ -829,6 +858,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
 
     async def handle_sideshow(self, player_id, opponent_id, bet_amount):
+        from datetime import datetime, timezone
         await self.send_game_data()
         from django.core.cache import cache
         player = await self.get_player_by_id(player_id)
@@ -897,8 +927,13 @@ class GameConsumer(AsyncWebsocketConsumer):
         )
 
         await self.send(text_data=json.dumps({'message': f'Sideshow request sent to {opponent.user.username}. Awaiting response...'}))
+        start_time = TURN_START_TIMES.get(self.game_room_id)
+        timeout = 30  # default
+        if start_time:
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            remaining = max(0, 30 - elapsed)
+            timeout = int(remaining)
 
-        timeout = 15
         for _ in range(timeout * 2):
             request = cache.get(sideshow_key)
             if request and request['accepted'] is not None:
@@ -1006,9 +1041,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     
     async def handle_show(self, player_id):
-        if self.turn_timer:
-            await self.cancel_timer()  # Cancel timer on action
-
+        await self.cancel_timer() # Cancel timer on action
         await database_sync_to_async(self.game_room.refresh_from_db)()
         logger.debug(f"Initial current_pot in handle_show: {self.game_room.current_pot}")
         await self.update_game_state("showdown")

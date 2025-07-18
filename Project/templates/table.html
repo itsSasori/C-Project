@@ -83,7 +83,7 @@
                 <button class="control-button purple" id="sideshow-btn" onclick="requestSideshow()">Sideshow</button>
                 <button class="control-button blue" id="bet-btn">Bet</button> 
                 <button class="control-button blue" id="double-bet-btn">Double Bet</button>
-                <button class="control-button green" id="show-btn" onclick="requestShow()">Show</button>
+                <button class="control-button green" id="show-btn" onclick="console.log('Clicked!'); requestShow()">Show</button>
             </div>
             <div id="show-result" style="display: none;"></div>
         </div>
@@ -529,7 +529,7 @@ function updateControls(data) {
         currentUserId, 
         playerAtTurn: data.players && data.current_turn < data.players.length ? data.players[data.current_turn] : null 
     });
-
+    
     const controls = document.getElementById("controls");
     const seeCardsBtn = document.querySelector(`#see-cards-btn-${currentUserId}`);
     const players = data.players || [];
@@ -596,6 +596,7 @@ function updateControls(data) {
         sideshowBtn.style.display = isSideshowAllowed ? "inline-block" : "none";
         showBtn.style.display = showAllowed ? "inline-block" : "none";
         showBtn.disabled = currentPlayer.coins < showAmount;
+        showBtn.onclick = showAllowed && !showBtn.disabled ? () => requestShow() : null;
         document.getElementById("bet-btn").disabled = false;
         document.getElementById("double-bet-btn").disabled = false;
         if (seeCardsBtn && currentPlayer.is_blind) {
@@ -615,6 +616,11 @@ function updateControls(data) {
     }
 
     console.log(`Sideshow button status in updateControls: disabled=${sideshowBtn.disabled}, display=${sideshowBtn.style.display}`);
+    console.log("Show button state:", {
+        display: showBtn.style.display,
+        disabled: showBtn.disabled,
+        onclick: showBtn.onclick
+    });
 }
 
 
@@ -944,6 +950,7 @@ let isRequestingSideshow = false;
 }
 
 function requestShow() {
+    
     const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
     if (!currentPlayer) {
         console.error("Current player not found in playersData");
@@ -959,7 +966,8 @@ function requestShow() {
     let searched = 0;
     while (searched < players.length) {
         const candidate = players[prevTurnIndex];
-        if (candidate && activePlayers.includes(Number(candidate.id)) && !candidate.is_spectator && !candidate.is_packed) {
+        const isActive = activePlayers.some(p => Number(p.id) === Number(candidate.id));
+        if (candidate && isActive && !candidate.is_spectator && !candidate.is_packed) {
                 prevPlayer = candidate;
                 break;
         }

@@ -121,9 +121,22 @@ socket.onmessage = function(e) {
         return;
     }
     if (data.type === "game_update") {
+        const receivedAt = Date.now() / 1000; // In seconds
+        const latency = (receivedAt - data.sent_at).toFixed(4);
+        console.log(`🕐 Game update latency for this client: ${latency} sec`);
+
         currentTurn = data.current_turn;
         round_status = data.round_status;
         console.log("Round Status:", round_status);
+        // Stop and hide timer if round_status is showdown
+        if (data.round_status === "showdown") {
+            console.log("Round status is showdown, stopping and hiding timer");
+            stopTimer();
+            const timerDiv = document.getElementById("timer");
+            if (timerDiv) {
+                timerDiv.style.display = "none";
+            }
+        }
         if (data.round_status === "distribution") {
             console.log("New round detected. Resetting card visibility.");
             cardsToggled = false;
@@ -236,7 +249,7 @@ function updatePlayersList(players) {
         let playerElement = document.querySelector(`#player-${player.id}`);
 
         const isCurrentUser = player.id == currentUserId;
-        const shouldShowCards = isCurrentUser && !player.is_blind && !player.is_spectator;
+        const shouldShowCards = (isCurrentUser && !player.is_blind && !player.is_spectator) || round_status === "showdown";
         const cardsToggled = !player.is_blind;
 
         if (playerElement) {
@@ -275,18 +288,19 @@ function updatePlayersList(players) {
             if (cardsEl) {
                 const previousDisplay = cardsEl.style.display;
 
-                if (shouldShowCards) {
+                if (shouldShowCards && player.cards && player.cards.length > 0) {
                     cardsEl.style.display = 'block';
-                    const cardsToDisplay = (cardsToggled && player.cards.length === 0 && localHandCards.length > 0)
+                    const cardsToDisplay = (cardsToggled && player.cards.length === 0 && localHandCards.length > 0 && isCurrentUser)
                         ? localHandCards
                         : player.cards;
                     cardsEl.innerHTML = cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('');
-                    if (seeCardsBtn) seeCardsBtn.style.display = 'none';
+                    if (seeCardsBtn && isCurrentUser) seeCardsBtn.style.display = 'none';
                     console.log(`Player ${player.id} card visibility: Shown`);
                 } else {
                     cardsEl.style.display = 'none';
                     cardsEl.innerHTML = '<span class="card">Hidden</span>'; // Optional placeholder
-                    if (seeCardsBtn && !player.is_spectator && round_status === "betting") seeCardsBtn.style.display = 'block';
+                    if (seeCardsBtn && !player.is_spectator && round_status === "betting" && isCurrentUser) 
+                    seeCardsBtn.style.display = 'block';
                     console.log(`Player ${player.id} card visibility: Hidden`);
                 }
             }
@@ -317,12 +331,10 @@ function updatePlayersList(players) {
                 buttonHTML = `<button class="see-cards-btn" id="see-cards-btn-${player.id}" onclick="toggleCards(${player.id})">See Cards</button>`;
             }
 
-            const cardDisplay = shouldShowCards ? 'block' : 'none';
-            const cardsToDisplay = (cardsToggled && player.cards.length === 0 && isCurrentUser)
-                ? localHandCards
-                : (shouldShowCards ? player.cards : []);
-
-            const cardsHTML = shouldShowCards
+            const cardDisplay = shouldShowCards && player.cards && player.cards.length > 0 ? 'block' : 'none';
+            const cardsToDisplay = (shouldShowCards && player.cards && player.cards.length > 0 ) ? player.cards : [];
+           
+            const cardsHTML = cardsToDisplay.length > 0
                 ? cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('')
                 : `<span class="card">Hidden</span>`;
 
@@ -341,7 +353,7 @@ function updatePlayersList(players) {
             `;
             playerList.appendChild(playerDiv);
 
-            updatePlayerCards(player.id, shouldShowCards ? cardsToDisplay : []);
+            updatePlayerCards(player.id, cardsToDisplay);
             console.log(`New player ${player.id} appended to DOM`);
         }
     });
@@ -393,22 +405,19 @@ function updatePlayerCards(playerId, cards) {
         return;
     }
 
-    // Handle current user's card visibility
     if (isCurrentUser) {
-    if (cardsToggled) {
-        if (cards.length === 0 && localHandCards.length > 0) {
-            cards = localHandCards;
-        } else if (cards.length > 0) {
-            localHandCards = [...cards];
+        if (cardsToggled) {
+            if (cards.length === 0 && localHandCards.length > 0) {
+                cards = localHandCards;
+            } else if (cards.length > 0) {
+                localHandCards = [...cards];
+            }
+        } else {
+            localHandCards = [];
+            cards = [];
         }
-    } else {
-        localHandCards = [];
-        cards = []; // ⬅ force no card reuse
     }
-}
 
-
-    //  Always clear DOM (even if cards are empty)
     playerCardsContainer.innerHTML = "";
 
     cards.forEach(card => {
@@ -418,8 +427,7 @@ function updatePlayerCards(playerId, cards) {
         playerCardsContainer.appendChild(cardElement);
     });
 
-    // Only show if player toggled and has cards
-    const shouldShow = isCurrentUser && cardsToggled && cards.length > 0;
+    const shouldShow = (isCurrentUser && cardsToggled && cards.length > 0) || (round_status === "showdown" && cards.length > 0);
     playerCardsContainer.style.display = shouldShow ? "block" : "none";
 
     console.log(`Player ${playerId} card visibility: ${shouldShow ? "Shown" : "Hidden"}`);
@@ -610,8 +618,7 @@ function updateControls(data) {
         }
         showBtn.disabled = true;
         showBtn.onclick = null;
-        document.getElementById("timer").style.display = "none"; // Hide timer
-        stopTimer();
+        
         console.log("Controls hidden:", { round_status, currentTurnIndex, isPacked: currentPlayer?.is_packed });
     }
 
@@ -863,6 +870,7 @@ let isPacking = false;
      };
     socket.send(JSON.stringify(data));
     document.getElementById("pack-btn").disabled = true;
+    document.getElementById("controls").style.display = "none"; // Hide controls during packing
     updateGameUI("You have packed and folded this round.");
     setTimeout(() => {
         isPacking = false;
@@ -907,6 +915,7 @@ function respondToSideshow(accept) {
     document.getElementById("sideshow-prompt").remove();
     activeSideshowKey = null; // Reset after response
 }
+
 let isRequestingSideshow = false;
  function requestSideshow() {
     if (isRequestingSideshow) {
@@ -997,12 +1006,51 @@ function requestShow() {
     controls.style.display = "none";
 
 }
+
 function winnerprompt(data) {
+    console.log("Running winnerprompt");
+    
+    console.log("Winner cards:", data.hand_winner);
+    console.log("Loser cards:", data.hand_loser);
+
     const showResultDiv = document.getElementById("show-result");
     showResultDiv.style.display = "block";
     showResultDiv.innerHTML = `<p>${data.message}</p>`;
+
+    // Get winner and loser player data
+    const winnerPlayer = playersData.find(p => Number(p.id) === Number(data.winner_id));
+    const loserPlayer = playersData.find(p => Number(p.id) !== Number(data.winner_id) && !p.is_packed && !p.is_spectator);
+
+    // Render winner's cards
+    if (winnerPlayer) {
+        updatePlayerCards(winnerPlayer.id, data.hand_winner);
+        const winnerCardsContainer = document.querySelector(`#player-cards-${winnerPlayer.id}`);
+        if (winnerCardsContainer) {
+            winnerCardsContainer.style.display = "block"; // Ensure cards are visible
+            // Optional: Add a visual indication for the winner
+            winnerCardsContainer.style.border = "2px solid gold"; // Highlight winner's cards
+        }
+    }
+
+    // Render loser's cards
+    if (loserPlayer) {
+        updatePlayerCards(loserPlayer.id, data.hand_loser);
+        const loserCardsContainer = document.querySelector(`#player-cards-${loserPlayer.id}`);
+        if (loserCardsContainer) {
+            loserCardsContainer.style.display = "block"; // Ensure cards are visible
+        }
+    }
+
+    // Hide the result after 5 seconds
     setTimeout(() => {
         showResultDiv.style.display = "none";
+        // Reset card borders (optional)
+        if (winnerPlayer) {
+            const winnerCardsContainer = document.querySelector(`#player-cards-${winnerPlayer.id}`);
+            if (winnerCardsContainer) {
+                winnerCardsContainer.style.border = ""; // Remove highlight
+            }
+        }
     }, 5000); // Hide after 5 seconds
 }
  document.getElementById("pack-btn").addEventListener("click", packGame);

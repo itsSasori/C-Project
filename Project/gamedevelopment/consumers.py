@@ -257,6 +257,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         # In send_game_data
     
     async def send_game_data(self):
+        import time
+        start_time = time.time()
         print("send_game_data function triggered.")
         players = await self.get_players()  # Fetch players
         active_players = await self.get_active_players()  # Only active players
@@ -283,14 +285,26 @@ class GameConsumer(AsyncWebsocketConsumer):
             "pot": self.game_room.current_pot,
             "current_turn": self.game_room.current_turn,
             "status": self.game_room.is_active,
-            "round_status": self.game_room.round_status  # Include the round status here
+            "round_status": self.game_room.round_status,  # Include the round status here
+            "sent_at": time.time(),
         }
         # logger.debug(json.dumps(game_data, indent=2))
+        # Include hand_cards only during showdown
+        if self.game_room.round_status == "showdown":
+            for player_data in game_data["players"]:
+                # Fetch the player's hand_cards from the database
+                player_obj = await self.get_player_by_id(player_data["id"])
+                if player_obj and not player_obj.is_spectator and not player_obj.is_packed:
+                    player_data["cards"] = player_obj.hand_cards
+                else:
+                    player_data["cards"] = []
         # Send data to WebSocket group
         await self.channel_layer.group_send(
             self.room_group_name,
-            {"type": "game_update", "data": game_data}
+            {"type": "game_update", "data": game_data,
+             }
         )
+
 
     async def game_update(self, event):
         """Handles a game update event and updates the UI."""
@@ -914,7 +928,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         # Store sideshow request in cache
         sideshow_key = f"sideshow_{self.game_room_id}_{player_id}_{opponent_id}"
-        cache.set(sideshow_key, {'player_id': str(player_id), 'opponent_id': str(opponent_id), 'accepted': None}, timeout=15)
+        cache.set(sideshow_key, {'player_id': str(player_id), 'opponent_id': str(opponent_id), 'accepted': None}, timeout=30)
         logger.debug(f"Sideshow requested by {player.user.username} against {opponent.user.username}, key: {sideshow_key}")
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -1031,7 +1045,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             return
         
         request['accepted'] = accept
-        cache.set(sideshow_key, request, timeout=15)  # Update cache with response
+        cache.set(sideshow_key, request, timeout=30)  # Update cache with response
         logger.debug(f"Sideshow response from {opponent.user.username}: {'Accepted' if accept else 'Declined'}")
     
     async def sideshow_result(self, event):
@@ -1041,6 +1055,9 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     
     async def handle_show(self, player_id):
+        import time
+        start_time = time.time()
+        logger.debug(f"Time of when the handle show is executed : {start_time}")
         await self.cancel_timer() # Cancel timer on action
         await database_sync_to_async(self.game_room.refresh_from_db)()
         logger.debug(f"Initial current_pot in handle_show: {self.game_room.current_pot}")
@@ -1119,6 +1136,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         await database_sync_to_async(winner.user.save)()
         self.game_room.current_pot = 0
         await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+        
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -1126,17 +1144,29 @@ class GameConsumer(AsyncWebsocketConsumer):
                 "message": f'Show: {winner.user.username} wins the pot!',
                 "winner_id": winner.user.id,
                 "hand_winner": winner.hand_cards,
-                "hand_loser": opponent.hand_cards
+                "hand_loser": opponent.hand_cards,
+                "active_players_cards": [
+                    {"player_id": p.user.id, "username": p.user.username, "cards": p.hand_cards}
+                    for p in active_players
+                ]
             }
         )
         logger.debug("Sent show_result message")
-
-        logger.debug("Scheduling new round after showdown with 5-second delay")
-        await asyncio.sleep(5)
+        await self.send_game_data()
+        end_time = time.time()
+        logger.debug(f" Time of ending show function : {end_time} seconds")
+        logger.debug(f"[SHOW] Time to process show: {end_time - start_time:.4f} seconds")
+        logger.debug("Scheduling new round after showdown with 10-second delay")
+        # Detach restart_round to prevent blocking
+        asyncio.create_task(self.delayed_restart_round())
+        
+    async def delayed_restart_round(self):
+        """Delays the restart of the round by 10 seconds."""
+        logger.debug("Waiting 10 seconds before restarting round...")
+        await asyncio.sleep(10)  # Wait 10 seconds to allow result display
         self.game_room.is_active = False
         await database_sync_to_async(self.game_room.save)(update_fields=['is_active'])
         await self.restart_round()
-
 
     async def restart_round(self):
         logger.debug(f"Restarting round for game room {self.game_room_id}")
@@ -1380,8 +1410,4 @@ class GameConsumer(AsyncWebsocketConsumer):
         )
 
         # Schedule the next round after a delay
-        logger.debug("Scheduling restart_round with 5-second delay")
-        await asyncio.sleep(5)  # Allow time to display the result
-        self.game_room.is_active = False  # Reset is_active before restarting
-        await database_sync_to_async(self.game_room.save)(update_fields=['is_active'])
-        await self.restart_round()
+        asyncio.create_task(self.delayed_restart_round())

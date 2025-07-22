@@ -66,8 +66,8 @@
                 <!-- Center Content -->
                 <div class="center-content">
                     <div class="table-limit">Table Limit</div>
-                    <div class="table-pot">120,000</div>
-                    <div class="table-current-bet">♦ 12,800</div>
+                    <div class="table-pot">♦ </div>
+                    <div class="table-current-bet">♦ </div>
                     <div class="progress-bar"><div class="progress"></div>
                 </div>
                     <div id="game-log"></div>
@@ -129,7 +129,7 @@ socket.onmessage = function(e) {
         round_status = data.round_status;
         console.log("Round Status:", round_status);
         // Stop and hide timer if round_status is showdown
-        if (data.round_status === "showdown") {
+        if (data.round_status === "showdown" || data.round_status === "showdown_after_pack") {
             console.log("Round status is showdown, stopping and hiding timer");
             stopTimer();
             const timerDiv = document.getElementById("timer");
@@ -427,7 +427,7 @@ function updatePlayerCards(playerId, cards) {
         playerCardsContainer.appendChild(cardElement);
     });
 
-    const shouldShow = (isCurrentUser && cardsToggled && cards.length > 0) || (round_status === "showdown" && cards.length > 0);
+    const shouldShow = (isCurrentUser && cardsToggled && cards.length > 0) || (round_status === "showdown" && cards.length > 0 && !currentPlayer.is_packed);
     playerCardsContainer.style.display = shouldShow ? "block" : "none";
 
     console.log(`Player ${playerId} card visibility: ${shouldShow ? "Shown" : "Hidden"}`);
@@ -468,11 +468,11 @@ function updateGameUI(data) {
         messageElement.remove();
     }, 3000)
     }
-    console.log("table-pot", data.table_pot);
+    console.log("table-pot", data.table_limit);
     console.log("pot", data.pot);
     const tablePotElement = document.querySelector(".table-pot");
     if (tablePotElement && data.pot !== undefined) {  
-        tablePotElement.textContent = `♦ ${data.table_pot}`;
+        tablePotElement.textContent = `♦ ${data.table_limit}`;
     }
     const currentBetElement = document.querySelector(".table-current-bet");
     if (currentBetElement && data.pot !== undefined) {
@@ -1022,25 +1022,24 @@ function winnerprompt(data) {
     const loserPlayer = playersData.find(p => Number(p.id) !== Number(data.winner_id) && !p.is_packed && !p.is_spectator);
 
     // Render winner's cards
-    if (winnerPlayer) {
+    if (round_status === "showdown" && winnerPlayer && data.hand_winner.length > 0) {
         updatePlayerCards(winnerPlayer.id, data.hand_winner);
         const winnerCardsContainer = document.querySelector(`#player-cards-${winnerPlayer.id}`);
         if (winnerCardsContainer) {
-            winnerCardsContainer.style.display = "block"; // Ensure cards are visible
-            // Optional: Add a visual indication for the winner
+            winnerCardsContainer.style.display = "block"; // Ensure winner's cards are visible
             winnerCardsContainer.style.border = "2px solid gold"; // Highlight winner's cards
         }
     }
 
-    // Render loser's cards
-    if (loserPlayer) {
-        updatePlayerCards(loserPlayer.id, data.hand_loser);
-        const loserCardsContainer = document.querySelector(`#player-cards-${loserPlayer.id}`);
-        if (loserCardsContainer) {
-            loserCardsContainer.style.display = "block"; // Ensure cards are visible
-        }
+    if (round_status === "showdown_after_pack") {
+        playersData.forEach(player => {
+            const cardsContainer = document.querySelector(`#player-cards-${player.id}`);
+            if (cardsContainer) {
+                cardsContainer.innerHTML = "";
+                cardsContainer.style.display = "none";
+            }
+        });
     }
-
     // Hide the result after 5 seconds
     setTimeout(() => {
         showResultDiv.style.display = "none";

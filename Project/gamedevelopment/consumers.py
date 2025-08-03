@@ -1190,7 +1190,7 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def next_turn(self, active_players_count):
         from datetime import datetime, timezone
         logger.debug(f"Entering next_turn with active_players_count: {active_players_count}")
-        await self.cancel_timer() # Cancel existing timer
+        await self.cancel_timer()  # Cancel existing timer
         logger.debug("Existing timer canceled")
 
         if active_players_count <= 1:
@@ -1208,26 +1208,68 @@ class GameConsumer(AsyncWebsocketConsumer):
                 self.game_room.players.select_related('user').order_by('id').all()
             ))()
 
-            # Get current player list for turn rotation
             current_index = self.game_room.current_turn
             total_players = len(all_players)
             logger.debug(f"Current turn index: {current_index}, total players: {total_players}")
-            
+
             next_index = (current_index + 1) % total_players
             searched = 0
 
-            # Find next valid player
             while searched < total_players:
                 candidate = all_players[next_index]
-                if not candidate.is_packed and not candidate.is_spectator and not candidate.disconnected_at:
-                    self.game_room.current_turn = next_index
-                    await database_sync_to_async(self.game_room.save)(update_fields=["current_turn"])
-                    logger.debug(f"Next turn set to index {next_index} - player: {candidate.user.username}")
-                    await self.start_timer(candidate)  # Start timer for the next player
-                    await self.send_game_data()
-                    return
-                next_index = (next_index + 1) % total_players
-                searched += 1
+
+                if candidate.is_packed or candidate.is_spectator:
+                    logger.debug(f"Skipping player {candidate.user.username} (packed or spectator)") 
+                    next_index = (next_index + 1) % total_players
+                    searched += 1
+                    continue
+                
+                #Set turn to candiate regardless of disconnect status
+                self.game_room.current_turn = next_index
+                await database_sync_to_async(self.game_room.save)(update_fields=["current_turn"])
+                logger.debug(f"Next turn set to index {next_index} - player: {candidate.user.username}")
+
+            
+                if candidate.disconnected_at:
+                    time_since_disconnect = (datetime.now(timezone.utc) - candidate.disconnected_at).total_seconds()
+                    reconnect_key = f"reconnect_{self.game_room_id}_{candidate.user.id}"
+                    task = RECONNECT_TIMERS.get(reconnect_key)
+
+                    if time_since_disconnect > 10:
+                        logger.debug(f"Player {candidate.user.username} disconnected for more than 10 seconds, marking as packed")
+                        candidate.is_packed = True
+                        await database_sync_to_async(candidate.save)(update_fields=['is_packed'])
+                        await self.channel_layer.group_send(
+                            self.room_group_name,
+                            {
+                                "type":"player_packed",
+                                "player_id":candidate.user.id,
+                                "message":f"Player {candidate.user.username} packed due to disconnection timeout. "
+
+                            }
+                        )
+                        if task:
+                            task.cancel()
+                            del RECONNECT_TIMERS[reconnect_key]
+                        next_index = (next_index + 1) % total_players
+                        searched += 1
+                        continue
+                    elif task:  # Reconnect timer still active
+                        logger.debug(f"Player {candidate.user.username} is disconnected, but reconnect timer is active")
+                        # Allow timer to run in background, but set turn and start timer
+                        self.game_room.current_turn = next_index
+                        await database_sync_to_async(self.game_room.save)(update_fields=["current_turn"])
+                        await self.start_timer(candidate)
+                        await self.send_game_data()
+                        return  # Let reconnect timer handle packing if it expires
+
+                # Valid player found (not packed, not spectator, not disconnected)
+                self.game_room.current_turn = next_index
+                await database_sync_to_async(self.game_room.save)(update_fields=["current_turn"])
+                logger.debug(f"Next turn set to index {next_index} - player: {candidate.user.username}")
+                await self.start_timer(candidate)
+                await self.send_game_data()
+                return
 
             logger.warning("No valid player found for the next turn. Triggering winner declaration.")
             active_players = await self.get_active_players()

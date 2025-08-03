@@ -38,6 +38,7 @@ class Player(models.Model):
     is_ready = models.BooleanField(default=False)
     is_turn = models.BooleanField(default=False)
     is_spectator = models.BooleanField(default=False)  # New field for spectator status
+    disconnected_at = models.DateTimeField(null=True, blank=True)  # Timestamp when the player disconnected
 
     class Meta:
         unique_together = ('user', 'table')

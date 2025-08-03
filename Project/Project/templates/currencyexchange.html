@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Currency Exchange</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Poppins', sans-serif;
+      margin: 0;
+      padding: 0;
+      background: linear-gradient(to bottom right, #1c3a69, #1e2f57, #5f4d92);
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .header {
+      background: rgba(0, 0, 0, 0.2);
+      padding: 16px;
+      margin-bottom: 24px;
+      border-radius: 12px;
+      color: white;
+    }
+    .header div {
+      margin-bottom: 8px;
+    }
+    .currency-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .currency-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .currency-box div {
+      display: flex;
+      align-items: center;
+      padding: 8px 16px;
+      border-radius: 9999px;
+      background-color: #d91d3d;
+    }
+    .currency-box img {
+      margin-right: 8px;
+      width: 16px;
+      height: 16px;
+    }
+    .button {
+      background-color: #28a745;
+      color: white;
+      padding: 8px 16px;
+      border-radius: 9999px;
+      border: none;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+    .button:hover {
+      background-color: #218838;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: rgba(0, 0, 0, 0.2);
+      border: 2px solid rgba(255, 223, 0, 0.5);
+      padding: 16px;
+      border-radius: 12px;
+      color: white;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+    .card img {
+      width: 48px;
+      height: 48px;
+      margin-bottom: 12px;
+    }
+    .card .card-title {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .card .card-subtitle {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+    .status-bar {
+      display: flex;
+      gap: 24px;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.4);
+      border-radius: 12px;
+    }
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-item div {
+      display: flex;
+      align-items: center;
+      padding: 8px 16px;
+      border-radius: 9999px;
+      color: white;
+    }
+    .status-item .coins {
+      background-color: #d91d3d;
+    }
+    .status-item .gold {
+      background-color: #f2b808;
+    }
+    .status-item .diamond {
+      background-color: #0653c2;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div>Convert Gold to Coins: 1 Gold = 100 Coins</div>
+      <div class="currency-controls">
+        <div class="currency-box">
+          <div class="coins">
+            <img src="https://via.placeholder.com/16" alt="Coins"> 100
+          </div>
+          <button class="button">-</button>
+          <div class="gold">
+            <img src="https://via.placeholder.com/16" alt="Gold"> 1
+          </div>
+          <button class="button">+</button>
+        </div>
+        <button class="button">Redeem</button>
+      </div>
+    </div>
+
+    <!-- Currency Cards -->
+    <div class="grid">
+      <div class="card">
+        <img src="https://via.placeholder.com/48" alt="Coins">
+        <div class="card-title">10,000</div>
+        <div class="card-subtitle">Coins</div>
+        <button class="button">Rs 99</button>
+      </div>
+      <div class="card">
+        <img src="https://via.placeholder.com/48" alt="Coins">
+        <div class="card-title">25,000</div>
+        <div class="card-subtitle">Coins</div>
+        <button class="button">Rs 199</button>
+      </div>
+      <div class="card">
+        <img src="https://via.placeholder.com/48" alt="Coins">
+        <div class="card-title">60,000</div>
+        <div class="card-subtitle">Coins</div>
+        <button class="button">Rs 499</button>
+      </div>
+      <div class="card">
+        <img src="https://via.placeholder.com/48" alt="Coins">
+        <div class="card-title">150,000</div>
+        <div class="card-subtitle">Coins</div>
+        <button class="button">Rs 999</button>
+      </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div class="status-item coins">
+        <img src="https://via.placeholder.com/16" alt="Coins"> 1,000,000
+      </div>
+      <div class="status-item gold">
+        <img src="https://via.placeholder.com/16" alt="Gold"> 1,000
+      </div>
+      <div class="status-item diamond">
+        <img src="https://via.placeholder.com/16" alt="Diamond"> 10
+      </div>
+    </div>
+  </div>
+</body>
+</html>

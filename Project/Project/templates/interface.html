@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teen Patti</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body class="bg-[#1a1a2e] text-white min-h-screen flex flex-col items-center">
+    <div class="w-full max-w-md">
+        <!-- Top Header -->
+        <div class="flex justify-between items-center p-4">
+        </div>{% if user.is_authenticated%}
+            <div class="flex items-center gap-2">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-yellow-500 to-yellow-600 flex items-center justify-center">
+                    <img src="" alt="Player" class="w-8 h-8 rounded-full">
+                <span class="text-sm font-medium">{{user.username}}</span>
+            </div>
+            <div class="flex items-center gap-2 bg-gradient-to-r from-green-500 to-green-600 px-4 py-1 rounded-full">
+                <img src="" alt="Coins" class="w-5 h-5">
+                <span class="font-bold">{{user.coins}}</span>
+            </div>
+            {%endif%}
+
+        </div>
+        
+        <!-- Logo -->
+        <div class="flex justify-center my-4 relative">
+            <h1 class="text-3xl font-bold text-yellow-500">TEEN PATTI</h1>
+            <img src="" alt="Crown" class="absolute -top-3 -right-6 w-6 h-6">
+        </div>
+        
+        <!-- Main Menu Buttons -->
+        <div class="grid grid-cols-2 gap-4 px-4 mt-8" id ="play-game-btn">
+            <a href="{% url 'game_table' game_room_id=game_room_id %}" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+                <span data-lucide="users" class="w-8 h-8"></span>
+                <span class="text-sm font-medium text-center">PLAY GAME</span>
+            </a>
+            {% comment %} <a href="" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+                <span data-lucide="users" class="w-8 h-8"></span>
+                <span class="text-sm font-medium text-center">JOIN PRIVATE TABLE</span>
+            </a>
+            <a href="" class="relative group bg-red-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+                <span data-lucide="users" class="w-8 h-8"></span>
+                <span class="text-sm font-medium text-center">CREATE PRIVATE TABLE</span>
+            </a>
+            <a href="" class="relative group bg-green-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+                <span data-lucide="trophy" class="w-8 h-8"></span>
+                <span class="text-sm font-medium text-center">PLAY VARIATION</span>
+            </a>
+            <a href="" class="relative group bg-yellow-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+                <span data-lucide="star" class="w-8 h-8"></span>
+                <span class="text-sm font-medium text-center">PREMIUM TABLE</span>
+            </a> {% endcomment %}
+        </div>
+        
+        <!-- Bottom Navigation -->
+        <div class="fixed bottom-0 left-0 right-0 bg-[#2a2a3e] p-4">
+            <div class="flex justify-between items-center max-w-md mx-auto">
+                <button class="flex flex-col items-center gap-1" data-lucide="home"></button>
+                <button class="flex flex-col items-center gap-1" data-lucide="trophy"></button>
+                <button class="flex flex-col items-center gap-1" data-lucide="users"></button>
+                <button class="flex flex-col items-center gap-1" data-lucide="share-2"></button>
+                <button class="flex flex-col items-center gap-1" data-lucide="star"></button>
+                <ul>
+                    <li class="relative">
+                        <button id="settings-btn" class="flex flex-col items-center gap-1" data-lucide="settings"></button>
+                        <ul id="settings-menu" class="absolute left-0 w-full bg-[#2a2a3e] text-white hidden bottom-full mb-2">
+                            {% if user.is_authenticated %}
+                                <li><a href="{% url 'edit-profile' %}" class="btn btn--main btn--pill">Edit Profile</a></li>
+                                <li><a href="{% url 'logout' %}" class="btn btn--main btn--pill">Logout</a></li>
+                            {% else %}
+                                <li><a href="{% url 'login' %}" class="btn btn--main btn--pill">Login</a></li>
+                            {% endif %}
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+<script>
+    lucide.createIcons();
+    document.getElementById('settings-btn').addEventListener('click', function() {
+        const menu = document.getElementById('settings-menu');
+        menu.classList.toggle('hidden');
+    });
+
+        
+</script>

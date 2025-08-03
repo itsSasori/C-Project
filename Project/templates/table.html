@@ -103,6 +103,7 @@
     let localHandCards = [];   // Stores cards locally after toggle
     let activeSideshowKey = null; // Track the current sideshow request
     let timerInterval = null; // Track timer interval
+    let pendingtimerdata = null; // Store pending timer data for reconnects
 const socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameRoomId}/`);
 
 socket.onopen = function(e) {
@@ -187,6 +188,12 @@ socket.onmessage = function(e) {
             updateGameUI(data);
             updateBetButton(data); // Update the bet button text dynamically
             updateDoubleBetButton(data); // Update the double bet button text dynamically
+
+            if (pendingtimerdata) {
+                console.log("Processing pending timer data:", pendingtimerdata);
+                handleTimerStart(pendingtimerdata);
+                pendingtimerdata = null; // Clear after processing
+            }
         }
     } else if (data.type === "spectator_notification") {
         // Display spectator notification
@@ -212,8 +219,10 @@ socket.onmessage = function(e) {
     } else if (data.type === "show_result") {
         winnerprompt(data);
     }else if (data.type === "timer_start") {
+        console.log("Timer start event received:", data);
         if (!playersData.length) {
             console.warn("playersData not initialized for timer_start, waiting for game_update");
+            pendingtimerdata = data; // Store pending timer data
             return;
         }
         handleTimerStart(data);
@@ -223,7 +232,6 @@ socket.onmessage = function(e) {
      } else if (data.type === "player_disconnected") {
         // Handle player leaving scenario
         console.log(`Player ${data.player_id} has disconnected.`);
-        removePlayerFromUI(data.player_id);
     } else if (data.message) {
         updateGameUI(data.message);
     } else {
@@ -482,8 +490,11 @@ function updateGameUI(data) {
 
 function handleTimerStart(data) {
     console.log(`handleTimerStart: player_id=${data.player_id}, duration=${data.duration}, currentUserId=${currentUserId}`);
+
     const timerDiv = document.getElementById("timer");
     const timerCountdown = document.getElementById("timer-countdown");
+
+    // Find the player
     const player = playersData.find(p => Number(p.id) === Number(data.player_id));
 
     if (!player) {
@@ -498,30 +509,38 @@ function handleTimerStart(data) {
         return;
     }
 
-    // Update timer display without overwriting timerCountdown
+    // Use the actual duration from server (important for reconnects)
+    let timeLeft = Math.ceil(data.duration);
+
+    if (timeLeft <= 0) {
+        console.warn("Received expired timer duration, skipping display");
+        timerDiv.style.display = "none";
+        return;
+    }
+
+    // Clear any previous timer
+    stopTimer();
+
+    // Show and initialize timer display
     timerDiv.style.display = "block";
     timerDiv.childNodes[0].textContent = `Time left for ${player.username}: `;
-    timerCountdown.textContent = data.duration;
+    timerCountdown.textContent = timeLeft;
 
-    stopTimer(); // Clear any existing timer
-    let timeLeft = data.duration;
+    // Start new timer
     timerInterval = setInterval(() => {
-        timeLeft--;
-        console.log(`Timer tick: ${timeLeft} seconds left for ${player.username}`);
-        if (timerCountdown) {
-            timerCountdown.textContent = timeLeft;
-        } else {
-            console.error("timerCountdown element lost in interval");
-            stopTimer();
-            return;
-        }
+        timeLeft -= 1;
         if (timeLeft <= 0) {
             console.log(`Timer expired for ${player.username}`);
             stopTimer();
             timerDiv.style.display = "none";
+            return;
         }
+
+        // Update UI
+        timerCountdown.textContent = timeLeft;
     }, 1000);
 }
+
 
 function stopTimer() {
     if (timerInterval) {

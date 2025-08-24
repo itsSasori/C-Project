@@ -19,8 +19,10 @@
             </div>
             <div class="flex items-center gap-2 bg-gradient-to-r from-green-500 to-green-600 px-4 py-1 rounded-full">
                 <img src="" alt="Coins" class="w-5 h-5">
-                <span class="font-bold">{{user.coins}}</span>
+                <span class="font-bold">{{user.coins}}</span> 
+                
             </div>
+            <span class="font-bold">{{usersubscription.plan.name}}</span> 
             {%endif%}
 
         </div>
@@ -37,22 +39,24 @@
                 <span data-lucide="users" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">PLAY GAME</span>
             </a>
-            {% comment %} <a href="" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+           <a href="{% url 'join_private_table'%}" class="relative group bg-purple-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="users" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">JOIN PRIVATE TABLE</span>
             </a>
-            <a href="" class="relative group bg-red-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+            <a href="{% url 'create_private_table'%}" class="relative group bg-red-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="users" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">CREATE PRIVATE TABLE</span>
             </a>
+             {% comment %} 
             <a href="" class="relative group bg-green-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="trophy" class="w-8 h-8"></span>
                 <span class="text-sm font-medium text-center">PLAY VARIATION</span>
             </a>
-            <a href="" class="relative group bg-yellow-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
+            {% endcomment %}
+            <a href="{% url 'subscription_plans'%} " class="relative group bg-yellow-600 text-white p-6 rounded-xl transform transition-transform hover:scale-105 flex flex-col items-center gap-2">
                 <span data-lucide="star" class="w-8 h-8"></span>
-                <span class="text-sm font-medium text-center">PREMIUM TABLE</span>
-            </a> {% endcomment %}
+                <span class="text-sm font-medium text-center">SUBSCRIPTION</span>
+            </a> 
         </div>
         
         <!-- Bottom Navigation -->
@@ -60,7 +64,7 @@
             <div class="flex justify-between items-center max-w-md mx-auto">
                 <button class="flex flex-col items-center gap-1" data-lucide="home"></button>
                 <button class="flex flex-col items-center gap-1" data-lucide="trophy"></button>
-                <button class="flex flex-col items-center gap-1" data-lucide="users"></button>
+                    <button onclick="window.location.href='{% url 'redeem_page' %}'" class="flex flex-col items-center gap-1" data-lucide="redeem">Redeem</button>
                 <button class="flex flex-col items-center gap-1" data-lucide="share-2"></button>
                 <button class="flex flex-col items-center gap-1" data-lucide="star"></button>
                 <ul>
@@ -90,3 +94,6 @@
 
         
 </script>
+<script src="https://unpkg.com/lucide@latest"></script>
+
+

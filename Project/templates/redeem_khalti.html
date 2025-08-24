@@ -1,0 +1,36 @@
+
+{% block content %}
+<div class="flex flex-col items-center mt-12">
+  <h2 class="text-2xl font-bold mb-6">Redeem with Khalti</h2>
+  <button onclick="payWithKhalti()" 
+          class="bg-green-600 text-white px-8 py-3 rounded-xl hover:bg-green-700 transition">
+    Proceed to Khalti
+  </button>
+</div>
+
+<script src="https://khalti.s3.ap-south-1.amazonaws.com/KhaltiCheckout.js"></script>
+<script>
+function payWithKhalti() {
+  var config = {
+    "publicKey": "test_public_key_xxxxxxxx", // Replace with real
+    "productIdentity": "redeem",
+    "productName": "Coin Redeem",
+    "productUrl": window.location.href,
+    "eventHandler": {
+      onSuccess(payload) {
+        alert("Redeem successful!");
+        console.log(payload);
+      },
+      onError(error) {
+        console.log(error);
+      },
+      onClose() {
+        console.log("Widget closed");
+      }
+    }
+  };
+  var checkout = new KhaltiCheckout(config);
+  checkout.show({ amount: {{ redeemable_money }}00 }); // in paisa
+}
+</script>
+{% endblock %}

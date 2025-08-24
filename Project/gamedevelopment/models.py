@@ -4,7 +4,7 @@ from django.db import models
 from django.utils.timezone import now
 from django.core.validators import MinValueValidator
 from django.conf import settings
-from django.utils import timezone
+import uuid
 
 # Create your models here.
 
@@ -20,9 +20,17 @@ class GameTable(models.Model):
     current_turn = models.IntegerField(default=0)  # The player ID whose turn it is
     round_status = models.CharField(max_length=50, choices=[('waiting', 'Waiting'),('betting', 'Betting'),('distribution', 'Distribution'), ('showdown', 'Showdown'),('showdown_after_pack', 'Showdown After Pack')], default='waiting')
     round_number = models.IntegerField(default=1)
+    room_code = models.CharField(max_length=10, unique=True, default="", blank=True)
+
+    def save(self, *args, **kwargs):
+        if not self.room_code:  # auto-generate code on first save
+            self.room_code = str(uuid.uuid4().hex[:6]).upper()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.name}Game-Table -{self.id}'
+    
+
     
     
 
@@ -71,26 +79,34 @@ class SubscriptionPlan(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
     duration_days = models.PositiveIntegerField(help_text="Duration in days")
     description = models.TextField(blank=True, null=True)
-    is_active = models.BooleanField(default=True)
+   
     
     def __str__(self):
         return f"{self.name} - ${self.price}"  
 
 class UserSubscription(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    plan = models.ForeignKey(SubscriptionPlan, on_delete=models.CASCADE)
+    
+    # Remove ForeignKey to SubscriptionPlan or make it optional
+    plan = models.ForeignKey('SubscriptionPlan', on_delete=models.SET_NULL, null=True, blank=True)
+    
+    amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)],null=True)  # custom amount
+    duration_days = models.PositiveIntegerField(null=True)  # store actual duration
+    redemption_rate = models.DecimalField(max_digits=10, decimal_places=4,null=True)  # rate for coin redemption
+
     start_date = models.DateTimeField(default=now)
     end_date = models.DateTimeField()
     is_active = models.BooleanField(default=True)
     auto_renew = models.BooleanField(default=False)
-    
+
     def save(self, *args, **kwargs):
         if not self.end_date:
-            self.end_date = self.start_date + timedelta(days=self.plan.duration_days)
+            self.end_date = self.start_date + timedelta(days=self.duration_days)
         super().save(*args, **kwargs)
-    
-    def __str__(self):
-        return f"{self.user.username} - {self.plan.name}"
+
+    def is_valid(self):
+        return self.is_active and self.start_date <= now() <= self.end_date
+
     
 class Payment(models.Model):
     user= models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -116,15 +132,32 @@ class Redemption(models.Model):
     
 
 class GameHistory(models.Model):
-    game = models.ForeignKey(GameTable, on_delete=models.CASCADE)
-    player = models.ForeignKey(Player, on_delete=models.CASCADE)
-    action = models.CharField(max_length=50)  # e.g., "bet", "fold", "call"
+    # Keep FKs but don’t force cascade-delete
+    game = models.ForeignKey(GameTable, on_delete=models.SET_NULL, null=True, blank=True)
+    player = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, blank=True)
+
+    # Snapshots (permanent)
+    game_id_snapshot = models.IntegerField(null=True, blank=True)
+    game_name_snapshot = models.CharField(max_length=255, null=True, blank=True)
+    player_id_snapshot = models.IntegerField(null=True, blank=True)
+    player_username_snapshot = models.CharField(max_length=150, null=True, blank=True)
+
+    action = models.CharField(max_length=50,null=True, blank=True)  # e.g., "bet", "pack", "call"
     amount = models.PositiveIntegerField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"GameHistory {self.id} - {self.player.user.username}"
+        return f"[{self.timestamp}] {self.player_username_snapshot or 'Unknown'} - {self.action} ({self.amount})"
 
+
+class EarnedCoin(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    amount = models.PositiveIntegerField()
+    earned_at = models.DateTimeField(default=now)
+    redeemed = models.BooleanField(default=False)
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.amount} coins - {'Redeemed' if self.redeemed else 'Not Redeemed'}"
 
 # class PremiumTable(models.Model):
 #     """Represents a premium Teen Patti table with exclusive features."""

@@ -1,0 +1,30 @@
+{% block content %}
+<div class="flex justify-center mt-12">
+  <div class="flex items-center gap-4">
+    <!-- Redeem button -->
+    <button id="redeemBtn" 
+            class="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-xl hover:bg-indigo-700 transition">
+      <span><a href="{%url 'redeem_khalti' %}">Redeem</span></a>
+    </button>
+
+    <!-- Money shown after click -->
+    <input id="moneyBox" type="text" value="रु {{ redeemable_money }}" 
+           class="hidden border rounded-lg px-4 py-2 w-32 text-center bg-gray-100 cursor-not-allowed" 
+           readonly>
+  </div>
+</div>
+
+<script>
+  const btn = document.getElementById("redeemBtn");
+  const box = document.getElementById("moneyBox");
+
+  btn.addEventListener("click", () => {
+    box.classList.remove("hidden");
+
+    // Redirect after showing amount (2s delay for UX)
+    setTimeout(() => {
+      window.location.href = "{% url 'redeem_khalti' %}";
+    }, 2000);
+  });
+</script>
+{% endblock %}

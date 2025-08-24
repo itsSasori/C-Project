@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Custom Subscription</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://khalti.s3.ap-south-1.amazonaws.com/KhaltiCheckout.js"></script>
+</head>
+<body class="bg-gray-100 flex justify-center items-center min-h-screen">
+
+<div class="bg-white p-6 rounded-2xl shadow-lg w-full max-w-lg">
+    <h2 class="text-2xl font-bold mb-4 text-center">Create Your Subscription</h2>
+
+    <!-- Amount Input -->
+    <div class="mb-4">
+        <label class="block text-gray-700 mb-1">Enter Amount (Min: Rs500)</label>
+        <input type="number" id="amount" class="w-full p-2 border rounded-lg focus:ring focus:ring-blue-300"
+               placeholder="Enter amount" min="500">
+    </div>
+
+    <!-- Duration Dropdown -->
+    <div class="mb-4">
+        <label class="block text-gray-700 mb-1">Select Duration</label>
+        <select id="duration" class="w-full p-2 border rounded-lg">
+            <option value="30">30 Days</option>
+            <option value="90">3 Months</option>
+            <option value="180">6 Months</option>
+            <option value="365">1 Year</option>
+        </select>
+    </div>
+
+    <!-- Redemption Rate Display -->
+    <div class="mb-4">
+        <p class="text-gray-600">Redemption Rate:</p>
+        <p id="rate" class="text-xl font-semibold text-blue-600">--</p>
+    </div>
+
+    <!-- Buy Button -->
+    <button id="buyBtn"
+            class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">
+        Proceed to Pay
+    </button>
+</div>
+
+<script>
+    const amountInput = document.getElementById('amount');
+    const durationSelect = document.getElementById('duration');
+    const rateDisplay = document.getElementById('rate');
+    const buyBtn = document.getElementById('buyBtn');
+
+    // Update redemption rate dynamically
+    function updateRate() {
+        const amount = amountInput.value;
+        const duration = durationSelect.value;
+
+        if (amount >= 500) {
+            fetch('gamedevelopment/calculate-rate/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                body: JSON.stringify({ amount, duration_days: duration })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    rateDisplay.textContent = data.rate + ' per coin';
+                }
+            });
+        } else {
+            rateDisplay.textContent = '--';
+        }
+    }
+
+    amountInput.addEventListener('input', updateRate);
+    durationSelect.addEventListener('change', updateRate);
+
+    /*// Khalti Checkout Configuration
+    const config = {
+        publicKey: "xxxxxxxx", // Replace with your Khalti key
+        productIdentity: "custom_subscription",
+        productName: "Subscription",
+        productUrl: window.location.href,
+        eventHandler: {
+            onSuccess(payload) {
+                // Call backend to verify and create subscription
+                const amount = amountInput.value;
+                const duration = durationSelect.value;
+
+                fetch('/purchase-subscription/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': getCookie('csrftoken')
+                    },
+                    body: JSON.stringify({
+                        token: payload.token,
+                        amount: amount,
+                        duration_days: duration
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert("Subscription activated! Rate: " + data.rate);
+                        window.location.reload();
+                    } else {
+                        alert("Payment failed: " + data.error);
+                    }
+                });
+            },
+            onError(error) {
+                console.log(error);
+                alert("Payment failed. Try again.");
+            },
+            onClose() {
+                console.log('Widget is closing');
+            }
+        }
+    };
+
+    const checkout = new KhaltiCheckout(config);
+
+    buyBtn.addEventListener('click', () => {
+        const amount = parseFloat(amountInput.value);
+        if (amount >= 500) {
+            checkout.show({ amount: amount * 100 }); // Khalti requires amount in paisa
+        } else {
+            alert("Please enter a valid amount (Min ₹500)");
+        }
+    });
+ */
+    // Get CSRF token for Django
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+   
+</script>
+
+</body>
+</html>

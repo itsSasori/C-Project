@@ -1,0 +1,10 @@
+
+{% block content %}
+<h2>Join Private Table</h2>
+{% if error %}<p style="color:red">{{ error }}</p>{% endif %}
+<form method="post">
+    {% csrf_token %}
+    <input type="text" name="room_code" placeholder="Enter Room Code" required>
+    <button type="submit">Join</button>
+</form>
+{% endblock %}

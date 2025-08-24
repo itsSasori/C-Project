@@ -13,6 +13,14 @@
     #timer-countdown {
         font-weight: bold;
     }
+    .room-code {
+    text-align: center;
+    font-size: 1.2em;
+    font-weight: bold;
+    margin-bottom: 10px;
+    color: #FFD700; /* golden color */
+}
+
 </style>
 </head>
 <body>
@@ -26,6 +34,11 @@
                 <button class="icon-button">ℹ</button>
                 <button class="icon-button">⚙</button>
             </div>
+            {%if is_private %}
+            <div class="room-code">
+                Room Code: <strong>{{ room_code }}</strong>
+            </div>
+            {%endif%}
             
             <!-- Poker Table -->
             <div class="table">
@@ -54,7 +67,7 @@
                         </div>
                              <!-- Show "See Cards" Button only for the player viewing the page -->    
                         {% if player.id == user.id %}
-                        <button class="see-cards" id="see-cards-btn-{{ player.id }}" onclick="toggleSeen({{ player.id }})"
+                        <button class="see-cards" id="see-cards-btn-{{ player.id }}" onclick="toggleCards({{ player.id }})"
                             {% if not player.is_blind %}style="display: none;"{% endif %}>
                             See Cards
                         </button>
@@ -104,11 +117,21 @@
     let activeSideshowKey = null; // Track the current sideshow request
     let timerInterval = null; // Track timer interval
     let pendingtimerdata = null; // Store pending timer data for reconnects
+    const gameState = {
+        cardsToggled: false,
+        localHandCards: [],
+        currentUserId:null,
+        playerData: [],
+    }
+    console.log("Game State:", gameState);
+    let isBetting = false;
+    let isPacking = false;
+
 const socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameRoomId}/`);
 
 socket.onopen = function(e) {
     console.log("Connected to game room");
-};
+}    
 
 socket.onmessage = function(e) {
     const data = JSON.parse(e.data);
@@ -125,7 +148,15 @@ socket.onmessage = function(e) {
         const receivedAt = Date.now() / 1000; // In seconds
         const latency = (receivedAt - data.sent_at).toFixed(4);
         console.log(`🕐 Game update latency for this client: ${latency} sec`);
-
+        
+        round_status = data.round_status;
+        if (data.round_status === "betting" && gameState.round_status !== "betting") {
+        handleNewRound(data);
+        }
+        gameState.round_status = data.round_status;
+        playersData = data.players.slice();
+        updatePlayersList(data.players);
+        
         currentTurn = data.current_turn;
         round_status = data.round_status;
         console.log("Round Status:", round_status);
@@ -189,11 +220,11 @@ socket.onmessage = function(e) {
             updateBetButton(data); // Update the bet button text dynamically
             updateDoubleBetButton(data); // Update the double bet button text dynamically
 
-            if (pendingtimerdata) {
-                console.log("Processing pending timer data:", pendingtimerdata);
-                handleTimerStart(pendingtimerdata);
-                pendingtimerdata = null; // Clear after processing
-            }
+        if (pendingtimerdata) {
+            console.log("Processing pending timer data:", pendingtimerdata);
+            handleTimerStart(pendingtimerdata);
+            pendingtimerdata = null; // Clear after processing
+        }
         }
     } else if (data.type === "spectator_notification") {
         // Display spectator notification
@@ -248,21 +279,22 @@ socket.onclose = function(e) {
 
 
 function updatePlayersList(players) {
-    console.log("updatePlayersList called with players:", players);
+    console.log("updatePlayersList called with players:", JSON.stringify(players.map(p => ({ id: p.id, username: p.username }))));
+    playersData = players.slice(); // Update global players data
     const playerList = document.querySelector(".players-grid");
     const existingPlayerIds = new Set(Array.from(playerList.children).map(child => child.id.replace('player-', '')));
 
     players.forEach(player => {
-        console.log(`Processing player: ${player.id}`);
+        console.log(`[updatePlayersList] Processing player: ${player.id}, username: ${player.username}, is_blind: ${player.is_blind}, is_spectator: ${player.is_spectator}, is_packed: ${player.is_packed}`);
         let playerElement = document.querySelector(`#player-${player.id}`);
 
         const isCurrentUser = player.id == currentUserId;
         const shouldShowCards = (isCurrentUser && !player.is_blind && !player.is_spectator) || round_status === "showdown";
-        const cardsToggled = !player.is_blind;
+        
 
         if (playerElement) {
             // === Update existing player ===
-            console.log(`Updating existing player ${player.id}`);
+            console.log(`[updatePlayersList] Updating existing player ${player.id}`);
             let imgElement = playerElement.querySelector('.player-img');
             if (!imgElement) {
                 imgElement = document.createElement('img');
@@ -290,37 +322,18 @@ function updatePlayersList(players) {
             playerElement.className = `player ${player.position}`;
             playerElement.setAttribute('data-player-id', player.id);
 
-            const cardsEl = playerElement.querySelector(`#player-cards-${player.id}`);
+            updatePlayerCards(player.id, player.cards);
             const seeCardsBtn = playerElement.querySelector(`#see-cards-btn-${player.id}`);
 
-            if (cardsEl) {
-                const previousDisplay = cardsEl.style.display;
-
-                if (shouldShowCards && player.cards && player.cards.length > 0) {
-                    cardsEl.style.display = 'block';
-                    const cardsToDisplay = (cardsToggled && player.cards.length === 0 && localHandCards.length > 0 && isCurrentUser)
-                        ? localHandCards
-                        : player.cards;
-                    cardsEl.innerHTML = cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('');
-                    if (seeCardsBtn && isCurrentUser) seeCardsBtn.style.display = 'none';
-                    console.log(`Player ${player.id} card visibility: Shown`);
-                } else {
-                    cardsEl.style.display = 'none';
-                    cardsEl.innerHTML = '<span class="card">Hidden</span>'; // Optional placeholder
-                    if (seeCardsBtn && !player.is_spectator && round_status === "betting" && isCurrentUser) 
-                    seeCardsBtn.style.display = 'block';
-                    console.log(`Player ${player.id} card visibility: Hidden`);
-                }
-            }
-
-            if (isCurrentUser && !player.is_spectator) {
-                if (!seeCardsBtn && player.is_blind && round_status === "betting") {
+            if (isCurrentUser && !player.is_spectator && player.is_blind && round_status === "betting" && !gameState.cardsToggled) {
+                if (!seeCardsBtn ) {
                     const newBtn = document.createElement('button');
                     newBtn.className = "see-cards-btn";
                     newBtn.id = `see-cards-btn-${player.id}`;
                     newBtn.textContent = "See Cards";
                     newBtn.onclick = () => toggleCards(player.id);
                     playerElement.appendChild(newBtn);
+                    console.log(`[updatePlayersList] Player ${player.id}: Created new 'See Cards' button`);
                 }
             }else if (seeCardsBtn) {
                 seeCardsBtn.style.display = 'none'; // Hide for spectators
@@ -328,14 +341,14 @@ function updatePlayersList(players) {
             existingPlayerIds.delete(player.id.toString());
         } else {
             // === Add new player ===
-            console.log(`Adding new player: ${player.id}`);
+            console.log(`[updatePlayersList] Adding new player: ${player.id}`);
             const playerDiv = document.createElement('div');
             playerDiv.classList.add('player', player.position);
             playerDiv.id = `player-${player.id}`;
             playerDiv.setAttribute('data-player-id', player.id);
 
             let buttonHTML = "";
-            if (isCurrentUser && !player.is_spectator && !cardsToggled && round_status === "betting") {
+            if (isCurrentUser && !player.is_spectator && round_status === "betting" && !gameState.cardsToggled) {
                 buttonHTML = `<button class="see-cards-btn" id="see-cards-btn-${player.id}" onclick="toggleCards(${player.id})">See Cards</button>`;
             }
 
@@ -343,8 +356,8 @@ function updatePlayersList(players) {
             const cardsToDisplay = (shouldShowCards && player.cards && player.cards.length > 0 ) ? player.cards : [];
            
             const cardsHTML = cardsToDisplay.length > 0
-                ? cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('')
-                : `<span class="card">Hidden</span>`;
+            ? cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('')
+            : '';
 
             playerDiv.innerHTML = `
                 <img src="${player.avatar || '/media/avatars/default.png'}" alt="Image" class="player-img">
@@ -374,71 +387,114 @@ function updatePlayersList(players) {
             staleElement.remove();
         }
     });
+    gameState.playerData = players; // Update gameState with latest players data
 }
 
 
 // Function to toggle the visibility of the player's cards
 function toggleCards(playerId) {
+    console.log(`[toggleCards] Called for playerId=${playerId}, currentUserId=${currentUserId}, round_status=${round_status}`);
     const cardsContainer = document.querySelector(`#player-cards-${playerId}`);
     const seeButton = document.querySelector(`#see-cards-btn-${playerId}`);
-
-    cardsContainer.style.display = "block";
-    cardsToggled = true;
-
-    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
-    if (currentPlayer && currentPlayer.cards.length > 0) {
-        localHandCards = [...currentPlayer.cards];  // Store cards locally
+    if (!cardsContainer || !seeButton) {
+        console.error(`[toggleCards] Player ${playerId}: cardsContainer or seeButton not found`);
+        return;
     }
 
-    if (seeButton) seeButton.style.display = "none";
+    const currentPlayer = playersData.find(p => Number(p.id) === Number(currentUserId));
+    if (!currentPlayer || !currentPlayer.is_blind || round_status !== "betting") {
+            console.log(`[toggleCards] Cannot toggle: is_blind=${currentPlayer?.is_blind},round_status=${round_status}`);
+            return;
+    }
 
-    const data = {
-        action: 'toggle_seen',
-        player_id: currentUserId
-    };
-    socket.send(JSON.stringify(data));
+    gameState.cardsToggled = true;
+    gameState.localHandCards = [];
+    cardsContainer.style.display = "block";
+    seeButton.style.display = "none";
+
+    console.log(`[toggleCards] Player ${playerId} toggled cards: cardsToggled=${gameState.cardsToggled}, localHandCards=${JSON.stringify(gameState.localHandCards)}`);
+
+    socket.send(JSON.stringify({
+            action: 'toggle_seen',
+            player_id: currentUserId
+    }));
+    console.log(`[toggleCards] Player ${playerId} requested to see cards. Waiting for server update...`);
+
 }
 
 
+
 function updatePlayerCards(playerId, cards) {
+    console.log(`[updatePlayerCards] Called for playerId=${playerId}, cards=${JSON.stringify(cards)}, round_status=${round_status}`);
     const playerCardsContainer = document.querySelector(`#player-cards-${playerId}`);
-    if (!playerCardsContainer) return;
+    if (!playerCardsContainer) {
+        console.error(`[updatePlayerCards] Player ${playerId}: playerCardsContainer not found`);
+        return;
+    }
 
     const isCurrentUser = playerId == currentUserId;
     const currentPlayer = playersData.find(p => Number(p.id) === Number(playerId));
+    if (!currentPlayer) {
+        console.error(`[updatePlayerCards] Player ${playerId} not found in playersData`);
+        return;
+    }
+    console.log(`[updatePlayerCards] Player ${playerId}: isCurrentUser=${isCurrentUser}, username=${currentPlayer?.username}, is_spectator=${currentPlayer?.is_spectator}, is_packed=${currentPlayer?.is_packed}`);
 
-    if (currentPlayer.is_spectator) {
+    if (currentPlayer.is_spectator || currentPlayer.is_packed) {
+        console.log(`[updatePlayerCards] Player ${playerId} is spectator/packed → hiding cards`);
         playerCardsContainer.innerHTML = "";
         playerCardsContainer.style.display = "none";
         return;
     }
 
-    if (isCurrentUser) {
-        if (cardsToggled) {
-            if (cards.length === 0 && localHandCards.length > 0) {
-                cards = localHandCards;
-            } else if (cards.length > 0) {
-                localHandCards = [...cards];
-            }
+    let cardsToDisplay = [];
+    let shouldShow = false;
+
+    if (isCurrentUser && !currentPlayer.is_blind) {
+        cardsToDisplay = currentPlayer.cards || [];
+        gameState.localHandCards = cardsToDisplay;
+        gameState.cardsToggled = true;
+        shouldShow = true;
+        console.log(`[updatePlayerCards] Player ${playerId} (current user, seen) → showing ${cardsToDisplay}`);
+
+    } else if (round_status === "showdown") {
+        console.log(`[updatePlayerCards] Player ${playerId} is in showdown. Packed=${currentPlayer.is_packed}, Spectator=${currentPlayer.is_spectator}`);
+        if (!currentPlayer.is_packed && !currentPlayer.is_spectator) {
+            cardsToDisplay = currentPlayer.cards || [];
+            shouldShow = true;
+            console.log(`[updatePlayerCards] Player ${playerId} showdown → showing ${cardsToDisplay}`);
         } else {
-            localHandCards = [];
-            cards = [];
+            console.log(`[updatePlayerCards] Player ${playerId} showdown but packed/spectator → hide cards`);
         }
+    } else {
+        console.log(`[updatePlayerCards] Player ${playerId} → not showdown, not current user → hiding cards`);
+        cardsToDisplay = [];
+        shouldShow = false;
     }
 
-    playerCardsContainer.innerHTML = "";
+    playerCardsContainer.innerHTML = cardsToDisplay.length > 0
+        ? cardsToDisplay.map(card => `<span class="card">${card}</span>`).join('')
+        : '';
 
-    cards.forEach(card => {
-        const cardElement = document.createElement('div');
-        cardElement.classList.add('card');
-        cardElement.textContent = card;
-        playerCardsContainer.appendChild(cardElement);
-    });
-
-    const shouldShow = (isCurrentUser && cardsToggled && cards.length > 0) || (round_status === "showdown" && cards.length > 0 && !currentPlayer.is_packed);
     playerCardsContainer.style.display = shouldShow ? "block" : "none";
 
-    console.log(`Player ${playerId} card visibility: ${shouldShow ? "Shown" : "Hidden"}`);
+    const seeCardsBtn = document.querySelector(`#see-cards-btn-${playerId}`);
+    if (isCurrentUser && !currentPlayer.is_spectator && currentPlayer.is_blind && round_status === "betting" && !gameState.cardsToggled) {
+        if (seeCardsBtn) seeCardsBtn.style.display = "block";
+    } else if (seeCardsBtn) {
+        seeCardsBtn.style.display = "none";
+    }
+
+    console.log(`[updatePlayerCards] Final decision → Player ${playerId}: ${shouldShow ? "SHOWN" : "HIDDEN"}`);
+}
+
+
+
+function handleNewRound(gameData) {
+    console.log("[handleNewRound] Resetting game state for new round");
+
+    gameState.cardsToggled = false;
+    gameState.localHandCards = [];  // ✅ clear old hand
 }
 
 function updateGameUI(data) {
@@ -680,7 +736,7 @@ document.addEventListener("DOMContentLoaded", () => {
     updateDoubleBetButton({ players: [], active_players: [], current_turn: 0 });
 });
 
-let isBetting = false;
+
 
 function updateBetButton(data) {
     console.log("updateBetButton:", { 
@@ -865,7 +921,6 @@ function placeDoubleBet(doubleAmount) {
     }, 1000);
 }
 
-let isPacking = false;
  function packGame() {
     console.log("packGame triggered. Round status:", round_status, "Current user ID:", currentUserId);
     if (isPacking) {
@@ -1027,51 +1082,51 @@ function requestShow() {
 }
 
 function winnerprompt(data) {
-    console.log("Running winnerprompt");
+    console.log(`[winnerprompt] Called with data: winner_id=${data.winner_id}, hand_winner=${JSON.stringify(data.hand_winner)}, hand_loser=${JSON.stringify(data.hand_loser)}, round_status=${round_status}`);
     
-    console.log("Winner cards:", data.hand_winner);
-    console.log("Loser cards:", data.hand_loser);
-
     const showResultDiv = document.getElementById("show-result");
     showResultDiv.style.display = "block";
     showResultDiv.innerHTML = `<p>${data.message}</p>`;
+    console.log(`[winnerprompt] Displaying result: ${data.message}`);
 
-    // Get winner and loser player data
     const winnerPlayer = playersData.find(p => Number(p.id) === Number(data.winner_id));
     const loserPlayer = playersData.find(p => Number(p.id) !== Number(data.winner_id) && !p.is_packed && !p.is_spectator);
+    console.log(`[winnerprompt] winnerPlayer=${winnerPlayer ? winnerPlayer.username : 'not found'}, loserPlayer=${loserPlayer ? loserPlayer.username : 'not found'}`);
 
-    // Render winner's cards
     if (round_status === "showdown" && winnerPlayer && data.hand_winner.length > 0) {
+        console.log(`[winnerprompt] Showdown: updating winner cards for player ${winnerPlayer.id}`);
         updatePlayerCards(winnerPlayer.id, data.hand_winner);
         const winnerCardsContainer = document.querySelector(`#player-cards-${winnerPlayer.id}`);
         if (winnerCardsContainer) {
-            winnerCardsContainer.style.display = "block"; // Ensure winner's cards are visible
-            winnerCardsContainer.style.border = "2px solid gold"; // Highlight winner's cards
+            winnerCardsContainer.style.display = "block";
+            winnerCardsContainer.style.border = "2px solid gold";
+            console.log(`[winnerprompt] Player ${winnerPlayer.id}: showing WINNER cards with gold border`);
         }
     }
 
     if (round_status === "showdown_after_pack") {
+        console.log(`[winnerprompt] Round status = showdown_after_pack. Clearing cards for ALL players.`);
         playersData.forEach(player => {
             const cardsContainer = document.querySelector(`#player-cards-${player.id}`);
             if (cardsContainer) {
                 cardsContainer.innerHTML = "";
                 cardsContainer.style.display = "none";
+                console.log(`[winnerprompt] Player ${player.id}: Cleared and hid cards for showdown_after_pack`);
             }
         });
     }
-    // Hide the result after 5 seconds
+
     setTimeout(() => {
         showResultDiv.style.display = "none";
-        // Reset card borders (optional)
         if (winnerPlayer) {
             const winnerCardsContainer = document.querySelector(`#player-cards-${winnerPlayer.id}`);
             if (winnerCardsContainer) {
-                winnerCardsContainer.style.border = ""; // Remove highlight
+                winnerCardsContainer.style.border = "";
+                console.log(`[winnerprompt] Player ${winnerPlayer.id}: Removed gold border after 5 seconds`);
             }
         }
-    }, 5000); // Hide after 5 seconds
+        console.log(`[winnerprompt] Hid show-result div after 5 seconds`);
+    }, 5000);
 }
- document.getElementById("pack-btn").addEventListener("click", packGame);
- document.getElementById("sideshow-btn").addEventListener("click", requestSideshow); 
 
 </script>

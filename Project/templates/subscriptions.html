@@ -41,6 +41,7 @@
         Proceed to Pay
     </button>
 </div>
+<script src="https://khalti.com/static/khalti-checkout.js"></script>
 
 <script>
     const amountInput = document.getElementById('amount');
@@ -54,7 +55,7 @@
         const duration = durationSelect.value;
 
         if (amount >= 500) {
-            fetch('gamedevelopment/calculate-rate/', {
+            fetch('/gamedevelopment/calculate-rate/', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -76,7 +77,7 @@
     amountInput.addEventListener('input', updateRate);
     durationSelect.addEventListener('change', updateRate);
 
-    /*// Khalti Checkout Configuration
+    // Khalti Checkout Configuration
     const config = {
         publicKey: "xxxxxxxx", // Replace with your Khalti key
         productIdentity: "custom_subscription",
@@ -130,7 +131,7 @@
             alert("Please enter a valid amount (Min ₹500)");
         }
     });
- */
+
     // Get CSRF token for Django
     function getCookie(name) {
         let cookieValue = null;

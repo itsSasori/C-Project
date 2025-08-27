@@ -477,7 +477,21 @@ class GameConsumer(AsyncWebsocketConsumer):
                     logger.debug(f"Only one player left, declaring winner: {remaining_players[0].user.username}")
                     await self.update_game_state("showdown_after_pack")
                     winner = remaining_players[0]
-                    await self.declare_winner(winner)
+                    logger.debug(f"Declaring winner: {winner.user.username}")
+                    pot = self.game_room.current_pot
+                    logger.debug(f"Awarding pot of {pot} to {winner.user.username}")
+                    # Credit coins
+                    winner.user.coins += pot
+                    await database_sync_to_async(winner.user.save)(update_fields=['coins'])
+                    # Reset pot
+                    self.game_room.current_pot = 0
+                    await self.add_earned_coins(winner.user, pot)
+
+                    await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+
+                    # Save history
+                    await self.save_game_history(winner, 'win', pot)
+
                     await self.channel_layer.group_send(
                         self.room_group_name,
                         {
@@ -734,7 +748,21 @@ class GameConsumer(AsyncWebsocketConsumer):
             winner = await self.compare_hands(winner, player)
         loser_ids = [p.user.id for p in active_players if p.user.id != winner.user.id]
 
-        await self.declare_winner(winner)
+        logger.debug(f"Declaring winner: {winner.user.username}")
+        pot = self.game_room.current_pot
+        logger.debug(f"Awarding pot of {pot} to {winner.user.username}")
+                    # Credit coins
+        winner.user.coins += pot
+        await database_sync_to_async(winner.user.save)(update_fields=['coins'])
+                    # Reset pot
+        self.game_room.current_pot = 0
+        await self.add_earned_coins(winner.user, pot)
+
+        await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+
+                    # Save history
+        await self.save_game_history(winner, 'win', pot)
+
 
         # Send show_result with all active players' cards
         await self.channel_layer.group_send(
@@ -774,12 +802,13 @@ class GameConsumer(AsyncWebsocketConsumer):
     def _check_and_lock_game_start(self):
         with transaction.atomic():
             self.game_room.refresh_from_db()
-            logger.debug(f"Game room {self.game_room.id}: round_status={self.game_room.round_status}, is_active={self.game_room.is_active}")            
-            if self.game_room.round_status in ['betting', 'distribution']:
+            if self.game_room.round_status in ['betting', 'distribution'] or self.game_room.is_active:
                 return False
             self.game_room.is_active = True
-            self.game_room.save(update_fields=['is_active'])
+            
+            self.game_room.save(update_fields=['is_active', 'round_status'])
             return True
+
 
         # Helper method to reset is_active
     
@@ -1219,7 +1248,22 @@ class GameConsumer(AsyncWebsocketConsumer):
                 logger.debug(f"Only one player left, declaring winner: {remaining_players[0].user.username}")
                 await self.update_game_state("showdown_after_pack")
                 winner = remaining_players[0]
-                await self.declare_winner(winner)
+                logger.debug(f"Declaring winner: {winner.user.username}")
+                pot = self.game_room.current_pot
+                logger.debug(f"Awarding pot of {pot} to {winner.user.username}")
+                # Credit coins
+                winner.user.coins += pot
+
+                await self.add_earned_coins(winner.user, pot)
+
+                await database_sync_to_async(winner.user.save)(update_fields=['coins'])
+                # Reset pot
+                self.game_room.current_pot = 0
+                await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+
+                # Save history
+                await self.save_game_history(winner, 'win', pot)
+
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
@@ -1625,8 +1669,19 @@ class GameConsumer(AsyncWebsocketConsumer):
         loser = opponent if winner.user.id == player.user.id else player
         logger.debug(f"Winner: {winner.user.username}, Loser: {loser.user.username}")
 
-        await self.declare_winner(winner)
-        
+        pot = self.game_room.current_pot
+        logger.debug(f"Awarding pot of {pot} to {winner.user.username}")
+        # Credit coins
+        winner.user.coins += pot
+        await self.add_earned_coins(winner.user, pot)
+
+        await database_sync_to_async(winner.user.save)(update_fields=['coins'])
+        # Reset pot
+        self.game_room.current_pot = 0
+        await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
+        # Save history
+        await self.save_game_history(winner, 'win', pot)
+
         await self.channel_layer.group_send(
             self.room_group_name,
             {

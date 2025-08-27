@@ -211,13 +211,13 @@ def redeem_khalti(request):
 def calculate_redemption_rate(amount, duration_days):
     base_rate = amount / duration_days
     if duration_days >= 365:
-        multiplier = 1.2
+        multiplier = Decimal('1.2')
     elif duration_days >= 180:
-        multiplier = 1.15
+        multiplier = Decimal('1.15')
     elif duration_days >= 90:
-        multiplier = 1.10
+        multiplier = Decimal('1.10')
     else:
-        multiplier = 1.0
+        multiplier = Decimal('1.0')
     return round(base_rate * multiplier, 4)
 
 @csrf_exempt
@@ -241,13 +241,15 @@ def calculate_rate(request):
 
     return JsonResponse({"success": False, "error": "Invalid method."})
 
-@login_required(login_url='/authentication/login/')
+
+@csrf_exempt
 def purchase_subscription(request):
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Invalid method"})
     
     try:
         data = json.loads(request.body)
+        print(data)
         amount = Decimal(data.get("amount"))
         duration_days = int(data.get("duration_days"))
         token = data.get("token")
@@ -259,12 +261,12 @@ def purchase_subscription(request):
     ALLOWED_DURATIONS = [30, 90, 180, 365]
     if amount < MIN_AMOUNT or duration_days not in ALLOWED_DURATIONS:
         return JsonResponse({"success": False, "error": "Invalid amount or duration"})
-
+    
     # Verify Khalti payment
     khalti_amount = int(amount * 100)
     url = "https://khalti.com/api/v2/payment/verify/"
     payload = {"token": token, "amount": khalti_amount}
-    headers = {"Authorization": "Key test_secret_key_xxxxxxxx"}
+    headers = {"Authorization": "xxxxxxxx"}
 
     try:
         response = requests.post(url, json=payload, headers=headers)

@@ -7,6 +7,7 @@ class User(AbstractUser):
     gold = models.PositiveIntegerField(default=0)
     diamonds = models.PositiveIntegerField(default=0)
     avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
+    is_bot = models.BooleanField(default=False)
     is_online = models.BooleanField(default=False)
 
     def __str__(self):

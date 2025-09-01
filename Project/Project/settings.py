@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'authentication',
     'rest_framework',
     'channels',
+    "rest_framework.authtoken",
 ]
 
 LOGIN_URL = "/authentication/login/"

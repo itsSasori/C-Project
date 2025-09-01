@@ -1,6 +1,7 @@
 # consumers.py
 import asyncio
 from datetime import datetime
+import string
 from asgiref.sync import sync_to_async  # Add this import
 import json
 import random
@@ -26,6 +27,12 @@ logging.basicConfig(
 # Force UTF-8 encoding for the console
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 logger = logging.getLogger('gamedevelopment')
+
+# List of realistic bot names
+BOT_NAMES = [
+    'Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Jamie', 'Quinn',
+    'Avery', 'Cameron', 'Parker', 'Reese', 'Skyler', 'Dakota', 'Finley', 'Emerson'
+]
 
 # Global timer store by game_room_id
 TURN_TIMERS = {}
@@ -84,14 +91,16 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         # Ensure the reconnecting client also sees the current timer
         await self.resend_current_timer()
-
-
+        
         # Only start the game if it hasn’t started yet and enough players are present
         player_count = await self.get_active_players_count()
         logger.debug(f"Player count: {player_count}")
-        if player_count >= 2 and not self.game_room.is_active and self.game_room.round_status == "waiting":            
-            logger.debug("Scheduling game start with 10-second delay")
+        if player_count >= 1 and not self.game_room.is_active and self.game_room.round_status == "waiting":            
+            logger.debug("Scheduling game start with 5-second delay")
+            
             asyncio.create_task(self.delayed_start_game())  # Schedule with delay
+        else:
+            logger.debug("Not enough players to start the game or game already active")
 
     async def handle_reconnect(self, player):
         from datetime import datetime, timezone
@@ -205,6 +214,12 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         logger.debug("Waiting 5 seconds before starting game...")
         await asyncio.sleep(5)  # Wait 5 seconds for more players to join
+        # Adjust bots based on real player count
+        # Adjust bots based on real player count
+        if getattr(self.game_room, "is_private", False):
+            logger.debug(f"Skipping bot addition: Table {self.game_room.id} is private.")
+        else:
+            await self.adjust_bots()
 
         # Recheck player count after delay
         player_count = await self.get_active_players_count()
@@ -220,63 +235,74 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         from datetime import datetime, timezone
         """Handles player exit in real-time."""
-        # await self.cancel_timer()
-        if self.game_room and self.player:
-             # Use sync_to_async for accessing player.user.id in async context
-            player_id = await database_sync_to_async(lambda: self.player.user.id)()
 
-             # Refresh latest game state
-            await database_sync_to_async(self.game_room.refresh_from_db)()
-            if self.game_room.round_status in ["showdown", "showdown_after_pack","waiting"]:
-                # immediately remove player instead of marking disconnected
-                await self.remove_player(self.player, self.game_room)
-                logger.debug(
-                    f"Player {self.player.user.username} (ID: {player_id}) "
-                    f"removed immediately after showdown."
-                )
+        # Guard against missing game_room or player
+        if not self.game_room or not self.player:
+            logger.debug("Disconnect called but no active game_room or player")
+            return
 
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        "type": "player_disconnected",
-                        "player_id": player_id,
-                        "message": f"Player {self.player.user.username} has left the table after showdown."
-                    },
-                )
-                
-                return
-            
-            # Normal flow: mark disconnected & start reconnect timer
-            self.player.disconnected_at = datetime.now(timezone.utc)
-            await database_sync_to_async(self.player.save)(update_fields=['disconnected_at'])
-            logger.debug(
-                f"Player {self.player.user.username} (ID: {player_id}) "
-                f"disconnected at {self.player.disconnected_at}"
-            )
+        user = getattr(self.player, "user", None)
+        if not user:
+            logger.debug("Disconnect called but player has no linked user")
+            return
+
+        player_id = user.id
+        username = user.username
+
+        # Refresh latest game state
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+
+        # Case 1: Remove immediately after showdown/waiting
+        if self.game_room.round_status in ["showdown", "showdown_after_pack", "waiting"]:
+            await self.remove_player(self.player, self.game_room)
+            logger.debug(f"Player {username} (ID: {player_id}) removed immediately after showdown.")
 
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
                     "type": "player_disconnected",
                     "player_id": player_id,
-                    "message": f"{self.player.user.username} has disconnected. They have 10 seconds to reconnect."
+                    "message": f"Player {username} has left the table after showdown."
                 },
             )
+            return
 
-            #Start reconnect timer
-            reconnect_key = f'reconnect_{self.game_room_id}_{player_id}'
-            logger.debug("Reconnect timer")
-            RECONNECT_TIMERS[reconnect_key] = asyncio.create_task(self.reconnect_timer(self.player,self.player.disconnected_at))
-            
-            # Do not stop the timer if the player is the current turn holder
-            await database_sync_to_async(self.game_room.refresh_from_db)()
-            all_players = await database_sync_to_async(lambda: list(
-                    self.game_room.players.select_related('user').order_by('id').all()
-                ))()
-            if (self.game_room.current_turn < len(all_players) and all_players[self.game_room.current_turn].user.id == self.player.user.id and not self.player.is_packed and not self.player.is_spectator):
-                logger.debug(f"Player {self.player.user.username} is current turn holder, timer continues")
-            else:
-                logger.debug(f"Player {self.player.user.username} is not current turn holder, cancelling timer")
+        #  Case 2: Mark disconnected & start reconnect timer
+        self.player.disconnected_at = datetime.now(timezone.utc)
+        await database_sync_to_async(self.player.save)(update_fields=['disconnected_at'])
+        logger.debug(f"Player {username} (ID: {player_id}) disconnected at {self.player.disconnected_at}")
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "player_disconnected",
+                "player_id": player_id,
+                "message": f"{username} has disconnected. They have 10 seconds to reconnect."
+            },
+        )
+
+        # Start reconnect timer
+        reconnect_key = f'reconnect_{self.game_room_id}_{player_id}'
+        logger.debug("Reconnect timer started")
+        RECONNECT_TIMERS[reconnect_key] = asyncio.create_task(
+            self.reconnect_timer(self.player, self.player.disconnected_at)
+        )
+
+        #  Check if player is current turn holder
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
+
+        if (
+            self.game_room.current_turn < len(all_players)
+            and all_players[self.game_room.current_turn].user.id == player_id
+            and not self.player.is_packed
+            and not self.player.is_spectator
+        ):
+            logger.debug(f"Player {username} is current turn holder, timer continues")
+        else:
+            logger.debug(f"Player {username} is not current turn holder, cancelling timer")
             
     async def reconnect_timer(self, player,disconnect_time):
         from datetime import datetime, timezone
@@ -488,9 +514,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await self.add_earned_coins(winner.user, pot)
 
                     await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
-
                     # Save history
                     await self.save_game_history(winner, 'win', pot)
+                    await self.update_challenge_progress(winner, hand_type=None)
 
                     await self.channel_layer.group_send(
                         self.room_group_name,
@@ -560,28 +586,52 @@ class GameConsumer(AsyncWebsocketConsumer):
         # In send_game_data
     
     async def send_game_data(self):
+        from .models import GameTable
         import time
         start_time = time.time()
         logger.debug(f"[send_game_data] Triggered for game room {self.game_room_id}")
-
-        if not self.game_room or not self.player:
-            logger.error("[send_game_data] Game room or player not initialized")
-            await self.safe_send({"error": "Game room or player not initialized"})
+        # 🔹 Step 1: Validate self.game_room
+        if not hasattr(self, 'channel_layer') or self.channel_layer is None:
+            logger.debug(f"[send_game_data] WebSocket already closed for user {self.scope['user'].username}, skipping send")
             return
+    
+        if not self.game_room:
+            logger.error(f"[send_game_data] self.game_room is None for game_room_id {self.game_room_id}")
+            self.game_room = await database_sync_to_async(lambda: GameTable.objects.filter(pk=self.game_room_id).first())()
+            if not self.game_room:
+                logger.error(f"[send_game_data] Game room {self.game_room_id} does not exist")
+                await self.safe_send({"error": "Game room not found"})
+                await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+                await self.close(code=4000)
+                return
+
+        # 🔹 Step 2: Validate self.player
+        if not self.player:
+            logger.info(f"[send_game_data] Player {self.scope['user'].username} already removed, skipping player-specific updates")
+        else:
+            # Refresh self.player to ensure latest state
+            try:
+                player_id = await database_sync_to_async(lambda: self.player.user.id)()
+                self.player = await self.get_player_by_id(player_id)
+            except Exception as e:
+                logger.warning(f"[send_game_data] Error refreshing player: {e}")
+                self.player = None
+            
 
         # Refresh game room state to ensure latest values
         await database_sync_to_async(self.game_room.refresh_from_db)()
         logger.debug(f"[send_game_data] Refreshed game room state: pot={self.game_room.current_pot}, "
                     f"round_status={self.game_room.round_status}, is_active={self.game_room.is_active}")
 
-        # Refresh self.player to ensure latest state
-        self.player = await self.get_player_by_id(self.player.user.id)
         
         # Fetch all players with necessary fields in one query
         players = await self.get_players()
         if not players:
             logger.warning("[send_game_data] No players found for game room")
             await self.safe_send({"error": "No players found"})
+            # 🔹 NEW: Close the consumer
+            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+            await self.close(code=4000)
             return
 
         # Filter active players
@@ -751,18 +801,19 @@ class GameConsumer(AsyncWebsocketConsumer):
         logger.debug(f"Declaring winner: {winner.user.username}")
         pot = self.game_room.current_pot
         logger.debug(f"Awarding pot of {pot} to {winner.user.username}")
-                    # Credit coins
+        # Credit coins
         winner.user.coins += pot
         await database_sync_to_async(winner.user.save)(update_fields=['coins'])
-                    # Reset pot
+        # Reset pot
         self.game_room.current_pot = 0
         await self.add_earned_coins(winner.user, pot)
 
         await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
 
-                    # Save history
-        await self.save_game_history(winner, 'win', pot)
+        # Save history
 
+        await self.save_game_history(winner, 'win', pot)
+        await self.update_challenge_progress(winner, hand_type=winner.hand_type)
 
         # Send show_result with all active players' cards
         await self.channel_layer.group_send(
@@ -863,7 +914,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             return Player.objects.select_related('user').get(user__id=player_id, table=self.game_room)
         except Player.DoesNotExist:
-            logger.error(f"Player with user ID {player_id} does not exist in table {self.game_room.id}!")
+            logger.error(f"[get_player_by_id] Player with user ID {player_id} does not exist in table {self.game_room.id}!")
             return None
         except Player.MultipleObjectsReturned:
             logger.error(f"Multiple Player entries found for user ID {player_id} in table {self.game_room.id}.")
@@ -975,7 +1026,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Game Room {game_room_id} not found!")
             return None
 
-
     @database_sync_to_async
     def get_player(self, user, game_room):
         # Fetches the player by user and game table.
@@ -1002,6 +1052,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         from .models import Player
         """Removes a player from the game room."""
         player.delete()
+        
 
         # Check if room is now empty
         if not game_room.players.exists():
@@ -1263,6 +1314,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
                 # Save history
                 await self.save_game_history(winner, 'win', pot)
+                await self.update_challenge_progress(winner, hand_type=None)
+
 
                 await self.channel_layer.group_send(
                     self.room_group_name,
@@ -1381,7 +1434,15 @@ class GameConsumer(AsyncWebsocketConsumer):
                 self.game_room.current_turn = next_index
                 await database_sync_to_async(self.game_room.save)(update_fields=["current_turn"])
                 logger.debug(f"Next turn set to index {next_index} - player: {candidate.user.username}")
-                await self.start_timer(candidate)
+                # Check if the current player is a bot
+                if await database_sync_to_async(lambda: candidate.user.is_bot)():
+                    logger.debug(f"Bot turn: {candidate.user.username}")
+                    # Schedule bot action instead of starting timer
+                    await self.start_timer(candidate)
+                    asyncio.create_task(self.bot_perform_action(candidate))
+                else:
+                    # For real players, start timer as usual
+                    await self.start_timer(candidate)
                 await self.send_game_data()
                 return
 
@@ -1681,6 +1742,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         await database_sync_to_async(self.game_room.save)(update_fields=['current_pot'])
         # Save history
         await self.save_game_history(winner, 'win', pot)
+        await self.update_challenge_progress(winner, hand_type=winner.hand_type)
+
 
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -1709,26 +1772,54 @@ class GameConsumer(AsyncWebsocketConsumer):
         from .models import GameTable
         """Delays the restart of the round by 10 seconds."""
         # 🛑 Make sure the game room still exists
+        # Cancel timers for this game room
+        timer_task = TURN_TIMERS.pop(self.game_room_id, None)
+        if timer_task and not timer_task.done():
+            timer_task.cancel()
+            try:
+                await timer_task
+            except asyncio.CancelledError:
+                logger.debug(f"Timer task for game room {self.game_room_id} canceled")
+
+        # Also clear TIMER_TRACKER for all players in this room
+        for pid in list(TIMER_TRACKER.keys()):
+            TIMER_TRACKER.pop(pid, None)
+
+        logger.debug(f"[delayed_restart_round] Starting for game room {self.game_room_id}")
+        await asyncio.sleep(2)  # Short delay to ensure previous messages are sent
         game_room = await database_sync_to_async(
         lambda: GameTable.objects.filter(pk=self.game_room_id).first()
         )()
         if not game_room:
-            logger.debug(f"Game room {self.game_room_id} deleted, skipping restart.")
+            logger.debug(f"[delayed_restart_round] Game room {self.game_room_id} deleted, skipping restart.")
             return
 
-        logger.debug("Cleaning up disconnected or bankrupt players before 10s delay...")
+        logger.debug("[delayed_restart_round] Cleaning up disconnected or bankrupt players before 10s delay...")
 
-        all_players = await database_sync_to_async(lambda: list(
-            game_room.players.select_related('user').all()
-        ))()
+        try:
+            all_players = await database_sync_to_async(lambda: list(
+                game_room.players.select_related("user").all()
+            ))()
+        except Exception as e:
+            logger.error(f"[delayed_restart_round] Failed fetching players: {e}")
+            return
         boot_amount = 100
 
         # Pre-cleanup: remove disconnected or bankrupt players
-        for player in all_players:
-            user_coins = await database_sync_to_async(lambda: player.user.coins)()
+        for player in list(all_players):
+            try:
+                user_coins = await database_sync_to_async(lambda: player.user.coins)()
+            except Exception:
+                logger.warning(f"[delayed_restart_round] Player {getattr(player.user, 'id', 'unknown')} missing user row, removing.")
+                await self.remove_player(player, game_room)
+                if self.player and player.user.id == self.player.user.id:
+                    logger.debug(f"[delayed_restart_round] Current consumer's player {player.user.username} removed, clearing self.player")
+                    self.player = None
+                continue
+
             if player.disconnected_at or user_coins < boot_amount:
                 logger.debug(
-                    f"Pre-restart cleanup: Removing player {player.user.username} (coins={user_coins}, disconnected={player.disconnected_at})"
+                    f"[delayed_restart_round] Pre-restart cleanup: Removing player {player.user.username} (coins={user_coins}, disconnected={player.disconnected_at})"
                 )
                 # Cancel any reconnect timer for this player
                 reconnect_key = f'reconnect_{self.game_room_id}_{player.user.id}'
@@ -1736,24 +1827,64 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if task:
                     task.cancel()
                     RECONNECT_TIMERS.pop(reconnect_key, None)
-                    logger.debug(f"Cancelled reconnect timer for player {player.user.username}")
+                    logger.debug(f"[delayed_restart_round] Cancelled reconnect timer for player {player.user.username}")
 
-                await self.remove_player(player, self.game_room)
+                try:
+                    await self.remove_player(player, game_room)
+                    await self.channel_layer.group_send(
+                        self.room_group_name,
+                        {
+                            "type": "player_disconnected",
+                            "player_id": player.user.id,
+                            "message": f"Player {player.user.username} removed before restart."
+                        }
+                    )
+                    if self.player and player.user.id == self.player.user.id:
+                        logger.debug(f"[delayed_restart_round] Current consumer's player {player.user.username} removed, clearing self.player")
+                        self.player = None
+                        # 🔹 NEW: Close the consumer to prevent further actions
+                        await self.close(code=4000)
+                        return
+                except Exception as e:
+                    logger.error(f"[delayed_restart_round] Error removing player {player.user.username}: {e}")
+
+        # 🔹 NEW: Remove all bot players to allow new real players to join
+        logger.debug("[delayed_restart_round] Removing all bot players before 10-second delay...")
+        bot_players = await database_sync_to_async(lambda: list(
+            game_room.players.filter(user__is_bot=True).select_related('user')
+        ))()
+        for bot in bot_players:
+            try:
+                logger.debug(f"[delayed_restart_round] Removing bot: {bot.user.username} (ID: {bot.user.id})")
+                await self.remove_player(bot, game_room)
+                await database_sync_to_async(bot.user.delete)()  # Delete bot user as well
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
                         "type": "player_disconnected",
-                        "player_id": player.user.id,
-                        "message": f"Player {player.user.username} removed before restart due to disconnect or low coins."
+                        "player_id": bot.user.id,
+                        "message": f"Bot {bot.user.username} removed to allow new players to join."
                     }
                 )
+            except Exception as e:
+                logger.error(f"[delayed_restart_round] Error removing bot {bot.user.username}: {e}")
 
-    
-               
-        # After cleanup, re-fetch players
+        # 🔹 Step 4: Re-fetch game room after cleanup
+        game_room = await database_sync_to_async(
+            lambda: GameTable.objects.filter(pk=self.game_room_id).first()
+        )()
+        if not game_room:
+            logger.debug(f"[delayed_restart_round] Game room {self.game_room_id} deleted during cleanup.")
+            return
+
+        # 🔹 Step 5: Reset remaining real players
         all_players = await database_sync_to_async(lambda: list(
             game_room.players.select_related('user').all()
         ))()
+        if not all_players:
+            logger.debug(f"[delayed_restart_round] No players remain, deleting game room {self.game_room_id}.")
+            await self.delete_game_room()
+            return
         
         @database_sync_to_async
         def reset_players(players, boot_amount):
@@ -1763,14 +1894,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                     player.is_blind = True
                     player.is_spectator = False
                     player.current_bet = 0
-                    
                     player.disconnected_at = None
                     player.save()
-                    logger.debug(f"Reset player {player.user.username}")
+                    logger.debug(f" [delayed_restart_round] Reset player {player.user.username}")
 
         await reset_players(all_players, boot_amount=100)
         # After cleanup, let clients refresh before round starts
-        logger.debug("Waiting 10 seconds before restarting round...")
         exists = await database_sync_to_async(
         lambda: GameTable.objects.filter(pk=self.game_room_id).exists()
         )()
@@ -1778,14 +1907,17 @@ class GameConsumer(AsyncWebsocketConsumer):
             await database_sync_to_async(
                 lambda: GameTable.objects.filter(pk=self.game_room_id).update(is_active=False)
             )()
-            logger.debug(f"Game room {self.game_room_id} marked inactive.")
+            logger.debug(f"[delayed_restart_round] Game room {self.game_room_id} marked inactive.")
         else:
-            logger.debug(f"Game room {self.game_room_id} no longer exists, skipping is_active update.")
+            logger.debug(f"[delayed_restart_round] Game room {self.game_room_id} no longer exists, skipping is_active update.")
             return
         
         self.game_room = game_room
+        if not self.player:
+            logger.debug(f"[delayed_restart_round] Skipping send_game_data for game room {self.game_room_id} as self.player is None")            
+        
         await self.send_game_data()
-
+        logger.debug("Waiting 10 seconds before restarting round...")
         await asyncio.sleep(10)  # Wait 10 seconds to allow result display
 
         # Refresh or re-fetch the game room from DB to ensure it's still valid
@@ -1794,32 +1926,38 @@ class GameConsumer(AsyncWebsocketConsumer):
         )()
 
         if not game_room:
-            logger.debug(f"Game room {self.game_room_id} deleted during delay, skipping restart.")
-            return
-
-        # Now safe to check players
-        player_count = await database_sync_to_async(lambda: game_room.players.count())()
-        if player_count == 0:
-            await database_sync_to_async(game_room.delete)()
-            logger.debug("Deleted empty game room, no restart scheduled.")
+            logger.debug(f"[delayed_restart_round] Game room {self.game_room_id} deleted during delay, skipping restart.")
             return
         
-        asyncio.create_task(self.restart_round())
+        self.game_room = game_room
+        if game_room:
+            asyncio.create_task(self.restart_round())
+            logger.debug(f"[delayed_restart_round] Scheduled restart_round for game room {self.game_room_id}")
+        else:
+            logger.debug(f"[delayed_restart_round] Game room {self.game_room_id} no longer exists, skipping restart.")
+
 
     async def restart_round(self):
         from .models import GameTable
         """Restarts the game round with card distribution and betting."""
-        logger.debug(f"Restarting round for game room {self.game_room_id}")
+        logger.debug(f"[restart_round] Restarting round for game room {self.game_room_id}")
 
         # Refresh game room to ensure latest state
-        game_room = await database_sync_to_async(lambda: GameTable.objects.filter(pk=self.game_room_id).first())()
+        if not self.game_room:
+            logger.error(f"[restart_round] self.game_room is None, attempting to re-fetch for game_room_id {self.game_room_id}")
+            self.game_room = await database_sync_to_async(lambda: GameTable.objects.filter(pk=self.game_room_id).first())()
+            if not self.game_room:
+                logger.error(f"[restart_round] Game room {self.game_room_id} does not exist, aborting restart")
+                return
 
+        # 🔹 Step 3: Refresh game room to ensure latest state
+        game_room = await database_sync_to_async(lambda: GameTable.objects.filter(pk=self.game_room_id).first())()
         if not game_room:
-            logger.debug(f"Game room {self.game_room_id} missing at restart, skipping.")
+            logger.debug(f"[restart_round] Game room {self.game_room_id} missing at restart, skipping.")
             return
 
         if game_room.is_active or game_room.round_status in ['betting', 'distribution']:
-            logger.debug(f"Game room {self.game_room_id} already active or in progress "
+            logger.debug(f"[restart_round] Game room {self.game_room_id} already active or in progress "
                         f"(is_active={game_room.is_active}, round_status={game_room.round_status}), skipping restart")
             return
 
@@ -1827,6 +1965,17 @@ class GameConsumer(AsyncWebsocketConsumer):
         all_players = await database_sync_to_async(
             lambda: list(game_room.players.filter(disconnected_at__isnull=True))
         )()      
+        player_count = len(all_players)
+        # Adjust bots based on real player count
+        if getattr(self.game_room, "is_private", False):
+            logger.debug(f"Skipping bot addition: Table {self.game_room.id} is private.")
+        else:
+            await self.adjust_bots()
+
+        # Re-fetch players after bot adjustment
+        all_players = await database_sync_to_async(
+            lambda: list(game_room.players.filter(disconnected_at__isnull=True))
+        )()
         player_count = len(all_players)
         @database_sync_to_async
         def reset_players(players):
@@ -1838,34 +1987,32 @@ class GameConsumer(AsyncWebsocketConsumer):
         
         await reset_players(all_players)
 
-        logger.debug(f"Player count for new round: {player_count}")
+        logger.debug(f"[restart_round] Player count for new round: {player_count}")
         if player_count == 0:
-            logger.debug("No players remain, deleting game room.")
+            logger.debug("[restart_round] No players remain, deleting game room.")
             await self.delete_game_room()
             await self.safe_send({
                 'message': 'Game room closed due to no players!'
             })
             return
+        
         if player_count < 2:
-            logger.debug("Not enough players to restart the round.")
+            logger.debug("[restart_round] Not enough players after boot, ending round")
             await self.update_game_state("waiting")
             await self.safe_send({
-                'message': 'Waiting for more players to join!'
+                'message': 'Not enough players to continue, waiting for more players!'
             })
             return
-        
-        
-
         # Additional logging to verify hand_cards are cleared after reset
         @database_sync_to_async
         def log_player_cards(players):
             for player in players:
                 player.refresh_from_db()
-                logger.debug(f"After reset - Player {player.user.username} - is_packed: {player.is_packed} - hand_cards: {player.hand_cards} - disconnected_at: {player.disconnected_at}")
+                logger.debug(f"[restart_round] After reset - Player {player.user.username} - is_packed: {player.is_packed} - hand_cards: {player.hand_cards} - disconnected_at: {player.disconnected_at}")
         await log_player_cards(all_players)
 
         active_players = await self.get_active_players()
-        logger.debug(f"Active players after reset: {[p.user.username for p in active_players]}, count: {len(active_players)}")
+        logger.debug(f"[restart_round] Active players after reset: {[p.user.username for p in active_players]}, count: {len(active_players)}")
 
         self.game_room.current_pot = 0
         self.game_room.current_turn = 0
@@ -1881,9 +2028,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         boot_amount = 100
         for player in active_players:
             try:
-                logger.debug(f"Processing boot for {player.user.username}, coins before: {player.user.coins}")
+                logger.debug(f"[restart_round] Processing boot for {player.user.username}, coins before: {player.user.coins}")
                 if player.user.coins < boot_amount:
-                    logger.debug(f"Insufficient coins for {player.user.username}, packing player")
+                    logger.debug(f"[restart_round] Insufficient coins for {player.user.username}, packing player")
                     player.is_packed = True
                     await database_sync_to_async(player.save)()
                     continue
@@ -1895,13 +2042,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.update_player_coins(player, -boot_amount)
                 await self.update_game_room_pot(boot_amount)
                 await database_sync_to_async(player.save)()
-                logger.debug(f"Boot applied for {player.user.username}, coins after: {player.user.coins}")
+                logger.debug(f"[restart_round] Boot applied for {player.user.username}, coins after: {player.user.coins}")
             except Exception as e:
-                logger.error(f"Error applying boot for {player.user.username}: {e}")
+                logger.error(f"[restart_round] Error applying boot for {player.user.username}: {e}")
 
         player_count = await self.get_active_players_count()
         if player_count < 2:
-            logger.debug("Not enough players after boot, ending round")
+            logger.debug("[restart_round] Not enough players after boot, ending round")
             await self.update_game_state("waiting")
             await self.safe_send({
                 'message': 'Not enough players to continue, waiting for more players!'
@@ -1909,13 +2056,19 @@ class GameConsumer(AsyncWebsocketConsumer):
             return
         # Begin betting round
         await self.update_game_state("betting")
-        logger.debug(f"New round started with pot = {self.game_room.current_pot}, is_active = {self.game_room.is_active}")
+        logger.debug(f"[restart_round] New round started with pot = {self.game_room.current_pot}, is_active = {self.game_room.is_active}")
         self.game_room.is_active = True
         await database_sync_to_async(game_room.save)(update_fields=['is_active'])
         self.game_room = game_room
-        logger.debug(f"New round: is_active = {self.game_room.is_active}, round_status = {self.game_room.round_status}")
-
+        logger.debug(f"[restart_round] New round: is_active = {self.game_room.is_active}, round_status = {self.game_room.round_status}")
+        # 🔹 Step 9: Validate self.player before sending game data
+        self.player = await self.get_player(self.scope["user"], self.game_room)
+        if not self.player:
+            logger.info(f"[restart round] Player {self.scope['user'].username} already removed, skipping update")
+        
+        
         await self.send_game_data()
+
         await self.start_current_turn_timer()
 
     @database_sync_to_async
@@ -1927,6 +2080,16 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def compare_hands(self, player1, player2):
         hand1_value = await self.calculate_hand_value(player1.hand_cards)
         hand2_value = await self.calculate_hand_value(player2.hand_cards)
+        rank_map = {
+            6: "trail",
+            5: "pure_sequence",
+            4: "sequence",
+            3: "color",
+            2: "pair",
+            1: "high_card"
+        }
+        player1.hand_type = rank_map[hand1_value['rank']]
+        player2.hand_type = rank_map[hand2_value['rank']]
         if hand1_value['rank'] == hand2_value['rank']:
             if hand1_value['high_card'] == hand2_value['high_card']:
                 return player1  # Tiebreaker: First player wins (simplified)
@@ -2001,6 +2164,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         # Save history
         await self.save_game_history(winner, 'win', pot)
+        await self.update_challenge_progress(winner, hand_type=None)
+
 
         # Notify all players
         await self.channel_layer.group_send(
@@ -2046,3 +2211,183 @@ class GameConsumer(AsyncWebsocketConsumer):
         from django.utils.timezone import now
         from .models import EarnedCoin
         await database_sync_to_async(EarnedCoin.objects.create)(user=user, amount=amount, earned_at=now())
+
+    async def adjust_bots(self):
+        real_players_count = await database_sync_to_async(
+            lambda: self.game_room.players.filter(user__is_bot=False).count()
+        )()
+        bot_players_count = await database_sync_to_async(
+            lambda: self.game_room.players.filter(user__is_bot=True).count()
+        )()
+
+        if real_players_count == 1:
+            desired_bots = 2
+        elif real_players_count == 2:
+            desired_bots = 1
+        else:
+            desired_bots = 0  # For 3+ real players, no bots
+
+        if bot_players_count < desired_bots:
+            # Add missing bots
+            to_add = desired_bots - bot_players_count
+            await self.add_bots(to_add)
+        elif bot_players_count > desired_bots:
+            # Remove excess bots
+            to_remove = bot_players_count - desired_bots
+            await self.remove_bots(to_remove)
+
+        await self.send_game_data()
+
+    @database_sync_to_async
+    def add_bots(self, count):
+        from .models import Player
+        from authentication.models import User
+
+        # Get real players' coins to calculate bot coins
+        real_players = list(self.game_room.players.filter(user__is_bot=False).select_related('user'))
+        if not real_players:
+            average_coins = 1000  # Default if no real players (edge case)
+        else:
+            real_coins = [p.user.coins for p in real_players]
+            average_coins = sum(real_coins) // len(real_coins)
+        
+        for _ in range(count):
+            # Create bot user with realistic name and coins (80-120% of average)
+            bot_name = random.choice(BOT_NAMES) + '_' + ''.join(random.choices(string.digits, k=4))
+            bot_coins = random.randint(int(average_coins * 0.8), int(average_coins * 1.2))
+            bot_user = User.objects.create(
+                username=bot_name,
+                coins=bot_coins,  
+                is_bot=True
+            )
+            # Create player for bot
+            Player.objects.create(user=bot_user, table=self.game_room)
+            logger.debug(f"Added bot: {bot_name} with {bot_coins} coins")
+
+    @database_sync_to_async
+    def remove_bots(self, count):
+        from .models import Player
+
+        bots = list(self.game_room.players.filter(user__is_bot=True).select_related('user'))
+        random.shuffle(bots)  # Randomly select which bots to remove
+        for bot in bots[:count]:
+            username = bot.user.username
+            bot.delete()
+            bot.user.delete()  # Optional: delete bot user if not reusing
+            logger.debug(f"Removed bot: {username}")
+
+    async def bot_perform_action(self, bot_player):
+        # Simulate thinking time
+        think_time = random.uniform(5, 15)
+        await asyncio.sleep(think_time)
+        logger.debug(f"Bot {bot_player.user.username} thinking for {think_time:.2f}s")
+
+        # Refresh game state to ensure it's still bot's turn
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
+        if self.game_room.current_turn >= len(all_players) or all_players[self.game_room.current_turn] != bot_player:
+            logger.debug(f"No longer {bot_player.user.username}'s turn, skipping action")
+            return
+
+        # Calculate hand strength
+        hand_value = await self.calculate_hand_value(bot_player.hand_cards)
+        strength = hand_value['rank']  # 1-6, higher better
+
+        # Decide action based on strength (simple AI)
+        actions = ['place_bet', 'place_double_bet', 'pack']
+        if strength >= 4:  # Good hand: less likely to pack, more likely to bet high
+            action_weights = [0.4, 0.5, 0.1]  # bet, double, pack
+        elif strength <= 2:  # Bad hand: more likely to pack
+            action_weights = [0.3, 0.2, 0.5]
+        else:  # Medium: balanced
+            action_weights = [0.4, 0.3, 0.3]
+
+        # Check if sideshow or show possible
+        active_count = await self.get_active_players_count()
+        if active_count == 2 and not bot_player.is_blind:
+            actions.append('show')
+            action_weights.append(0.3 if strength >= 4 else 0.1)
+            action_weights = [w / sum(action_weights) for w in action_weights]  # Normalize
+
+        # Sideshow if conditions met
+        prev_player = await self.get_previous_active_player()
+        if prev_player and not bot_player.is_blind and not prev_player.is_blind:
+            actions.append('sideshow')
+            action_weights.append(0.2 if strength >= 3 else 0.05)
+            action_weights = [w / sum(action_weights) for w in action_weights]
+
+        action = random.choices(actions, weights=action_weights)[0]
+        logger.debug(f"Bot {bot_player.user.username} chose action: {action}")
+
+        # Execute action
+        if action == 'pack':
+            await self.handle_pack(bot_player.user.id)
+        elif action == 'show':
+            await self.handle_show(bot_player.user.id)
+        elif action == 'sideshow':
+            bet_amount = await self.calculate_min_bet(bot_player)  # Or match prev
+            await self.handle_sideshow(bot_player.user.id, prev_player.user.id, bet_amount)
+        else:  # bet or double_bet
+            min_bet = await self.calculate_min_bet(bot_player)
+            max_bet = min(bot_player.user.coins, min_bet * 4)  # Arbitrary max
+            amount = random.randint(min_bet, max_bet)
+            if action == 'place_bet':
+                await self.handle_bet(bot_player.user.id, amount)
+            else:
+                # For double, adjust if needed
+                double_amount = min_bet * 2
+                if double_amount <= bot_player.user.coins:
+                    await self.handle_double_bet(bot_player.user.id, double_amount)
+                else:
+                    await self.handle_bet(bot_player.user.id, amount)
+
+    async def get_previous_active_player(self):
+        await database_sync_to_async(self.game_room.refresh_from_db)()
+        all_players = await database_sync_to_async(lambda: list(
+            self.game_room.players.select_related('user').order_by('id').all()
+        ))()
+        current_index = self.game_room.current_turn
+        prev_index = (current_index - 1) % len(all_players)
+        searched = 0
+        while searched < len(all_players):
+            candidate = all_players[prev_index]
+            if not candidate.is_packed and not candidate.is_spectator:
+                return candidate
+            prev_index = (prev_index - 1) % len(all_players)
+            searched += 1
+        return None
+
+    # Helper to calculate min bet for bot (similar to handle_bet logic)
+    async def calculate_min_bet(self, player):
+        prev_player = await self.get_previous_active_player()
+        if not prev_player:
+            return 1
+        min_bet = prev_player.current_bet
+        if player.is_blind:
+            min_bet = prev_player.current_bet if prev_player.is_blind else prev_player.current_bet // 2
+        else:
+            min_bet = prev_player.current_bet * 2 if prev_player.is_blind else prev_player.current_bet
+        return min_bet
+    
+
+
+    @database_sync_to_async
+    def update_challenge_progress(self,winner, hand_type):
+        from .models import PlayerChallenge
+        challenges = PlayerChallenge.objects.filter(player=winner.user, completed=False)
+
+        for pc in challenges:
+            if pc.challenge.type == "games":
+                pc.progress += 1
+            elif pc.challenge.type == "pair" and hand_type == "pair":
+                pc.progress += 1
+            elif pc.challenge.type == "high_card" and hand_type == "high_card":
+                pc.progress += 1
+
+            if pc.progress >= pc.challenge.goal:
+                pc.completed = True
+                winner.user.coins += pc.challenge.reward
+                winner.user.save(update_fields=["coins"])
+            pc.save()

@@ -1,0 +1,96 @@
+{% block content %}
+<h1>Your Challenges</h1>
+<div id="challenges-container">Loading challenges...</div>
+
+<script>
+  // --- CSRF helper ---
+  function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== "") {
+      const cookies = document.cookie.split(";");
+      for (let cookie of cookies) {
+        cookie = cookie.trim();
+        if (cookie.startsWith(name + "=")) {
+          cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+          break;
+        }
+      }
+    }
+    return cookieValue;
+  }
+
+  // --- Fetch and display challenges ---
+  async function fetchChallenges() {
+    try {
+      const response = await fetch('/gamedevelopment/challenges/');
+      const data = await response.json();
+      const container = document.getElementById("challenges-container");
+      container.innerHTML = "";
+
+      data.forEach(challenge => {
+        createChallengeCard(challenge, container);
+      });
+    } catch (error) {
+      console.error("Failed to load challenges:", error);
+    }
+  }
+
+  // --- Create a challenge card ---
+  function createChallengeCard(challenge, container) {
+    const card = document.createElement("div");
+    card.style.border = "1px solid #ccc";
+    card.style.padding = "10px";
+    card.style.margin = "10px";
+    card.style.borderRadius = "8px";
+
+    card.innerHTML = `
+      <h3>${challenge.name || challenge.challenge_name}</h3>
+      <p>Progress: ${challenge.progress}/${challenge.goal}</p>
+      <p>Reward: ${challenge.reward} coins</p>
+    `;
+
+    const btn = document.createElement("button");
+    btn.textContent = "Claim";
+    btn.disabled = !challenge.completed;
+    btn.addEventListener("click", () => {
+      claimReward(`/gamedevelopment/claim-challenge/${challenge.id}/`, card);
+    });
+
+    card.appendChild(btn);
+    container.appendChild(card);
+  }
+
+  // --- Claim reward ---
+  async function claimReward(url, cardElement) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "X-CSRFToken": getCookie("csrftoken"),
+          "Content-Type": "application/json"
+        },
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        alert(data.success);
+        cardElement.remove();  // remove claimed challenge card
+
+        // Add new challenge returned from backend
+        if (data.new_challenge) {
+          const container = document.getElementById("challenges-container");
+          createChallengeCard(data.new_challenge, container);
+        }
+      } else {
+        alert(data.error || "Could not claim reward");
+      }
+    } catch (error) {
+      console.error("Error claiming reward:", error);
+    }
+  }
+
+  // --- Load challenges on page load ---
+  fetchChallenges();
+</script>
+{% endblock %}

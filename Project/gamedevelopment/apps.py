@@ -4,3 +4,6 @@ from django.apps import AppConfig
 class GamedevelopmentConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'gamedevelopment'
+
+    def ready(self):
+        import gamedevelopment.signals

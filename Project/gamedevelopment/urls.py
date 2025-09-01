@@ -15,5 +15,7 @@ urlpatterns = [
    path("redeem/", views.redeem_page, name="redeem_page"),
    path("calculate-rate/", views.calculate_rate, name="calculate_rate"),
    path("purchase-subscription/", views.purchase_subscription, name="purchase_subscription"),
-
+   path('challenges/', views.player_challenges_list, name='player_challenges'),
+   path('challenge-page/', views.challenge_page, name='challenge_page'),
+   path('claim-challenge/<int:challenge_id>/', views.claim_challenge, name='claim_challenge'),
 ]

@@ -7,13 +7,16 @@ from django.db.models import F
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated ,AllowAny
+from django.contrib import messages
 from rest_framework import status
 from django.contrib.auth.decorators import login_required
-from .models import GameTable, Player,SubscriptionPlan,UserSubscription
+from .models import GameTable, Player,SubscriptionPlan,UserSubscription,Challenge,PlayerChallenge
+from .serializers import PlayerChallengeSerializer
 from django.db.models import Count  # Import Count for proper filtering
 from django.utils.timezone import now
 import requests
+import re
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
@@ -290,3 +293,75 @@ def purchase_subscription(request):
     
     return JsonResponse({"success": False, "error": result})
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def player_challenges_list(request):
+    
+    """
+    Return a list of challenges for the logged-in player.
+    """
+    challenges = PlayerChallenge.objects.filter(player=request.user)
+    serializer = PlayerChallengeSerializer(challenges, many=True)
+    return Response(serializer.data)
+
+
+@login_required(login_url='/authentication/login/')
+def challenge_page(request):
+    return render(request, "challenges.html")
+
+@login_required
+def claim_challenge(request, challenge_id):
+    """Claim a reward for a completed challenge."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST request required"}, status=400)
+
+    pc = get_object_or_404(PlayerChallenge,player=request.user, id=challenge_id)
+
+    if not pc.completed:
+        return JsonResponse({"error": "Challenge not completed yet"}, status=400)
+
+    # Grant reward
+    user = request.user
+    user.coins += pc.challenge.reward
+    user.save(update_fields=["coins"])
+    messages.success(request, f"You claimed {pc.challenge.reward} coins!")
+    # Save info that reward was claimed
+    old_name = pc.challenge.name
+    old_goal = pc.challenge.goal
+    old_reward = pc.challenge.reward
+    challenge_type = pc.challenge.type
+    is_vip_only = pc.challenge.is_vip_only
+
+    #Delete old challenge entry
+    pc.delete()
+    # --- Increment level for new challenge ---
+    
+    base_name = old_name.split(' (Level')[0]
+    new_name = f"{base_name}"
+
+
+    new_challenge = Challenge.objects.create(
+        
+        type=challenge_type,
+        goal=old_goal + 4,
+        reward=int(old_reward * 1.5),
+        is_vip_only=is_vip_only,
+        assign_to_all=False # Only assign to this user
+    )
+    new_pc, _ = PlayerChallenge.objects.get_or_create(
+        player=request.user,
+        challenge=new_challenge,
+    )
+
+    return JsonResponse({
+        "success": f"Reward {old_reward} coins claimed!",
+        "new_challenge": {
+            "id": new_pc.id,
+            "name": new_challenge.name,
+            "progress": new_pc.progress,
+            "goal": new_challenge.goal,
+            "reward": new_challenge.reward,
+            "completed": new_pc.completed
+        }
+    })

@@ -8,6 +8,7 @@ import uuid
 
 # Create your models here.
 
+
 class GameTable(models.Model):
     name = models.CharField(max_length=255)
     max_players = models.IntegerField(default=3)
@@ -159,35 +160,47 @@ class EarnedCoin(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.amount} coins - {'Redeemed' if self.redeemed else 'Not Redeemed'}"
 
-# class PremiumTable(models.Model):
-#     """Represents a premium Teen Patti table with exclusive features."""
+class Challenge(models.Model):
+    CHALLENGE_TYPE_CHOICES = [
+        ("games", "Games"),
+        ("pair", "Pair"),
+        ("high_card", "High Card"),
+        # Add more types as needed
+    ]
 
-#     name = models.CharField(max_length=255, unique=True, help_text="Name of the premium table (e.g., 'Diamond Lounge', 'High Rollers')")
-#     min_buy_in = models.PositiveIntegerField(default=10000, help_text="Minimum chips required to join the table")
-#     small_blind = models.PositiveIntegerField(default=100, help_text="Amount of the small blind")
-#     big_blind = models.PositiveIntegerField(default=200, help_text="Amount of the big blind")
-#     max_bet_limit = models.PositiveIntegerField(default=5000, help_text="Maximum bet allowed at the table")
-#     # is_vip = models.BooleanField(default=True, help_text="Whether this table is a VIP table (can have special styling)")  # Optional for visual distinction
-#     required_level = models.PositiveIntegerField(default=10, help_text="Minimum player level required to access the table")
-#     entry_fee = models.PositiveIntegerField(blank=True, null=True, help_text="Optional entry fee (in chips) to join the table")
-#     # Add a field for a background image or theme if you want to visually distinguish premium tables
-#     # background_image = models.ImageField(upload_to='premium_table_backgrounds/', blank=True, null=True)
+    name = models.CharField(max_length=255)
+    type = models.CharField(max_length=50, choices=CHALLENGE_TYPE_CHOICES)
+    goal = models.PositiveIntegerField()  # e.g., 6 games
+    reward = models.PositiveIntegerField()  # coins reward
+    is_vip_only = models.BooleanField(default=False)
+    assign_to_all = models.BooleanField(default=True)  # Whether to assign to all users upon creation
+    
+    def save(self, *args, **kwargs):
+        # Auto-generate name dynamically
+        if self.type == "games":
+            self.name = f"Win {self.goal} games"
+        elif self.type == "high_card":
+            self.name = f"Win {self.goal} with high card"
+        elif self.type == "pair":
+            self.name = f"Win {self.goal} with pair"
+        else:
+            # fallback if needed
+            self.name = f"Win {self.goal}"
 
-#     # Players are handled through a separate model (see below) or through a ManyToManyField (less recommended for real-time game state)
-#     # players = models.ManyToManyField(settings.AUTH_USER_MODEL, through='PlayerAtPremiumTable', related_name='premium_tables')  # Less efficient for real-time updates
+        super().save(*args, **kwargs)
 
-#     def __str__(self):
-#         return self.name
+    def __str__(self):
+        return self.name
+    
+class PlayerChallenge(models.Model):
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    challenge = models.ForeignKey(Challenge, on_delete=models.CASCADE)
+    progress = models.PositiveIntegerField(default=0)
+    completed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        unique_together = ("player", "challenge")
 
-# class PlayerAtPremiumTable(models.Model):  # For tracking players at specific tables (more efficient for real-time)
-#     """Represents a player's presence at a premium table."""
-
-#     player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='premium_table_sessions') # Link to your settings.AUTH_USER_MODEL model
-#     table = models.ForeignKey(PremiumTable, on_delete=models.CASCADE, related_name='players_at_table')
-#     joined_at = models.DateTimeField(auto_now_add=True)
-#     # Add other fields as needed, e.g., current chip balance at the table, etc.
-
-#     class Meta:
-#         unique_together = ('player', 'table')  # A player can only be at one table at a time
-
+    def __str__(self):
+        return f"{self.player.username} - {self.challenge.name} - {'Completed' if self.completed else 'In Progress'}"
